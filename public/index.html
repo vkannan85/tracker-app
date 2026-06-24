@@ -1,0 +1,874 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Activity Tracker</title>
+<script>document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";</script>
+<script src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+<script>
+  (function () {
+    const reactPreset = Babel.availablePresets.react;
+    Babel.registerPreset("react", function () {
+      return { presets: [[reactPreset, { runtime: "classic" }]] };
+    });
+  })();
+</script>
+<style>
+  :root, :root[data-theme="dark"] {
+    --bg:#090f1a; --panel:#0d1424; --well:#111827; --border:#1a2540; --border2:#1e293b;
+    --text1:#f1f5f9; --text2:#e2e8f0; --text3:#cbd5e1; --text4:#94a3b8;
+    --muted:#475569; --faint:#334155; --label:#64748b; --scrim:#000000cc;
+  }
+  :root[data-theme="light"] {
+    --bg:#eef1f5; --panel:#ffffff; --well:#f1f3f6; --border:#e2e6ec; --border2:#dde1e8;
+    --text1:#0f172a; --text2:#1e293b; --text3:#334155; --text4:#64748b;
+    --muted:#64748b; --faint:#94a3b8; --label:#475569; --scrim:#00000066;
+  }
+  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+  body { font-family: 'Inter', system-ui, sans-serif; background: var(--bg); color: var(--text2); height: 100vh; overflow: hidden; }
+  ::-webkit-scrollbar { width: 5px; height: 5px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
+  select option { background: var(--border2); color: var(--text2); }
+  input::placeholder, textarea::placeholder { color: var(--faint); }
+</style>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useEffect, useRef, useCallback } = React;
+
+// ── Constants ─────────────────────────────────────────────────────────────────
+const API = "http://localhost:3001/api";
+const CLIENT_COLORS = [
+  { dot:"#3b82f6", text:"#93c5fd" }, { dot:"#10b981", text:"#6ee7b7" },
+  { dot:"#f97316", text:"#fdba74" }, { dot:"#8b5cf6", text:"#c4b5fd" },
+  { dot:"#ec4899", text:"#f9a8d4" }, { dot:"#06b6d4", text:"#67e8f9" },
+  { dot:"#eab308", text:"#fde047" }, { dot:"#ef4444", text:"#fca5a5" },
+];
+const STATUSES   = ["To Do","In Progress","Blocked","Done"];
+const PRIORITIES = ["🔴 Critical","🟡 High","🟢 Normal"];
+const ST = {
+  "To Do":       { bg:"var(--well)", border:"var(--faint)", color:"var(--text4)" },
+  "In Progress": { bg:"#0f2a4a", border:"#2563eb", color:"#93c5fd" },
+  "Blocked":     { bg:"#2a1010", border:"#dc2626", color:"#fca5a5" },
+  "Done":        { bg:"#0a2016", border:"#16a34a", color:"#86efac" },
+};
+const fmtDate = ts => new Date(ts).toLocaleString("en-GB",{day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
+const todayStr = () => { const d=new Date(); return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,"0")}-${String(d.getDate()).padStart(2,"0")}`; };
+const fmtDueDate = ds => new Date(ds+"T00:00").toLocaleDateString("en-GB",{day:"2-digit",month:"short"});
+const dueInfo = (due_date, status) => {
+  if (!due_date || status==="Done") return null;
+  const days = Math.round((new Date(due_date+"T00:00") - new Date(todayStr()+"T00:00")) / 86400000);
+  if (days<0)  return { label:"Overdue",          bg:"#3b0a0a", border:"#7f1d1d", color:"#fca5a5" };
+  if (days===0)return { label:"Due today",        bg:"#2a1a05", border:"#92400e", color:"#fdba74" };
+  if (days<=2) return { label:"Due soon",          bg:"#2a2505", border:"#854d0e", color:"#fde047" };
+  return        { label:`Due ${fmtDueDate(due_date)}`, bg:"var(--well)", border:"var(--border2)", color:"var(--label)" };
+};
+const cc = (idx) => CLIENT_COLORS[idx % CLIENT_COLORS.length];
+
+// ── API helpers ───────────────────────────────────────────────────────────────
+const api = {
+  get:    url       => fetch(`${API}${url}`).then(r=>r.json()),
+  post:   (url, b)  => fetch(`${API}${url}`,{method:"POST",  headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
+  put:    (url, b)  => fetch(`${API}${url}`,{method:"PUT",   headers:{"Content-Type":"application/json"},body:JSON.stringify(b)}).then(r=>r.json()),
+  delete: url       => fetch(`${API}${url}`,{method:"DELETE"}).then(r=>r.json()),
+};
+
+// ── Main App ──────────────────────────────────────────────────────────────────
+function App() {
+  const [projects,  setProjects]  = useState([]);
+  const [tasks,     setTasks]     = useState([]);
+  const [subtasks,  setSubtasks]  = useState([]);
+  const [checklist, setChecklist] = useState([]);
+  const [comments,  setComments]  = useState([]);
+  const [captures,  setCaptures]  = useState([]);
+  const [loading,   setLoading]   = useState(true);
+  const [error,     setError]     = useState(null);
+
+  const [panel,        setPanel]       = useState(null);
+  const [view,         setView]        = useState("board");
+  const [filterProj,   setFP]          = useState("all");
+  const [filterStatus, setFS]          = useState("all");
+  const [search,       setSearch]      = useState("");
+  const [taskModal,    setTaskModal]   = useState(null);
+  const [projModal,    setProjModal]   = useState(false);
+  const [newProjName,  setNewProjName] = useState("");
+  const [captureText,  setCaptureText] = useState("");
+  const [promotingCaptureId, setPromotingCaptureId] = useState(null);
+  const [theme, setTheme] = useState(()=>localStorage.getItem("theme")||"dark");
+  useEffect(()=>{ document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
+
+  const emptyForm = { title:"", project_id: projects[0]?.id||"", priority:"🟢 Normal", status:"To Do", committed:false, notes:"", due_date:"" };
+  const [taskForm, setTaskForm] = useState(emptyForm);
+
+  // Load all data
+  const loadAll = useCallback(async () => {
+    try {
+      setLoading(true); setError(null);
+      const [p,t,s,ch,co,ca] = await Promise.all([
+        api.get("/projects"), api.get("/tasks"), api.get("/subtasks"),
+        api.get("/checklist"), api.get("/comments"), api.get("/captures"),
+      ]);
+      setProjects(p); setTasks(t); setSubtasks(s);
+      setChecklist(ch); setComments(co); setCaptures(ca);
+      if (!taskForm.project_id && p.length) setTaskForm(f=>({...f,project_id:p[0].id}));
+    } catch(e) {
+      setError("Cannot connect to server. Make sure Node.js is running on port 3001.");
+    } finally { setLoading(false); }
+  }, []);
+
+  useEffect(() => { loadAll(); }, [loadAll]);
+
+  // ── Derived ──────────────────────────────────────────────────────────────────
+  const projColor      = id => { const p=projects.find(x=>x.id===id); return cc(p?.color_idx??0); };
+  const committedActive = tasks.filter(t=>t.committed && t.status!=="Done");
+  const capturedPending = captures.filter(c=>!c.done);
+
+  const filteredTasks = tasks.filter(t => {
+    if (filterProj!=="all" && t.project_id!==filterProj) return false;
+    if (filterStatus!=="all" && t.status!==filterStatus) return false;
+    if (search && !t.title.toLowerCase().includes(search.toLowerCase())) return false;
+    return true;
+  });
+
+  const stats = {
+    total:    tasks.length,
+    done:     tasks.filter(t=>t.status==="Done").length,
+    critical: tasks.filter(t=>t.priority==="🔴 Critical"&&t.status!=="Done").length,
+    blocked:  tasks.filter(t=>t.status==="Blocked").length,
+    overdue:  tasks.filter(t=>t.due_date&&t.status!=="Done"&&t.due_date<todayStr()).length,
+  };
+
+  // ── Projects ──────────────────────────────────────────────────────────────────
+  const saveProject = async () => {
+    if (!newProjName.trim()) return;
+    if (projModal==="new") {
+      const p = await api.post("/projects",{name:newProjName,color_idx:projects.length});
+      setProjects(prev=>[...prev,p]);
+    } else {
+      const p = await api.put(`/projects/${projModal.id}`,{name:newProjName});
+      setProjects(prev=>prev.map(x=>x.id===p.id?p:x));
+    }
+    setNewProjName(""); setProjModal(false);
+  };
+  const deleteProject = async (id) => {
+    await api.delete(`/projects/${id}`);
+    setProjects(prev=>prev.filter(p=>p.id!==id));
+    if (filterProj===id) setFP("all");
+  };
+
+  // ── Tasks ─────────────────────────────────────────────────────────────────────
+  const saveTask = async () => {
+    if (!taskForm.title.trim()) return;
+    if (taskModal==="new") {
+      const t = await api.post("/tasks", taskForm);
+      setTasks(prev=>[...prev,t]);
+    } else {
+      const t = await api.put(`/tasks/${taskModal.id}`, taskForm);
+      setTasks(prev=>prev.map(x=>x.id===t.id?t:x));
+    }
+    if (promotingCaptureId) {
+      await api.put(`/captures/${promotingCaptureId}`,{done:true});
+      setCaptures(prev=>prev.filter(c=>c.id!==promotingCaptureId));
+      setPromotingCaptureId(null);
+    }
+    setTaskModal(null); setTaskForm({...emptyForm,project_id:projects[0]?.id||""});
+  };
+  const closeTaskModal = () => {
+    setPromotingCaptureId(null);
+    setTaskModal(null);
+    setTaskForm({...emptyForm,project_id:projects[0]?.id||""});
+  };
+
+  const deleteTask = async (id) => {
+    await api.delete(`/tasks/${id}`);
+    const sids = subtasks.filter(s=>s.task_id===id).map(s=>s.id);
+    setTasks(prev=>prev.filter(t=>t.id!==id));
+    setSubtasks(prev=>prev.filter(s=>s.task_id!==id));
+    setChecklist(prev=>prev.filter(c=>!sids.includes(c.subtask_id)));
+    setComments(prev=>prev.filter(c=>!sids.includes(c.subtask_id)));
+    if (panel?.taskId===id) setPanel(null);
+  };
+
+  const updateTask = async (id, patch) => {
+    const t = await api.put(`/tasks/${id}`, patch);
+    setTasks(prev=>prev.map(x=>x.id===id?t:x));
+  };
+
+  const toggleCommit = async (id) => {
+    const t = tasks.find(x=>x.id===id); if(!t) return;
+    if (!t.committed && committedActive.length>=3) return;
+    await updateTask(id,{committed:!t.committed});
+  };
+
+  // ── Subtasks ──────────────────────────────────────────────────────────────────
+  const addSubtask = async (task_id, title) => {
+    if (!title.trim()) return;
+    const s = await api.post("/subtasks",{task_id,title});
+    setSubtasks(prev=>[...prev,s]);
+  };
+  const updateSubtask = async (id, patch) => {
+    const s = await api.put(`/subtasks/${id}`,patch);
+    setSubtasks(prev=>prev.map(x=>x.id===id?s:x));
+  };
+  const deleteSubtask = async (id) => {
+    await api.delete(`/subtasks/${id}`);
+    setSubtasks(prev=>prev.filter(s=>s.id!==id));
+    setChecklist(prev=>prev.filter(c=>c.subtask_id!==id));
+    setComments(prev=>prev.filter(c=>c.subtask_id!==id));
+  };
+
+  // ── Checklist ─────────────────────────────────────────────────────────────────
+  const addCheckItem = async (subtask_id, text) => {
+    if (!text.trim()) return;
+    const c = await api.post("/checklist",{subtask_id,text});
+    setChecklist(prev=>[...prev,c]);
+  };
+  const toggleCheckItem = async (id) => {
+    const item = checklist.find(c=>c.id===id); if(!item) return;
+    const c = await api.put(`/checklist/${id}`,{checked:!item.checked});
+    setChecklist(prev=>prev.map(x=>x.id===id?c:x));
+  };
+  const deleteCheckItem = async (id) => {
+    await api.delete(`/checklist/${id}`);
+    setChecklist(prev=>prev.filter(c=>c.id!==id));
+  };
+  const updateCheckItem = async (id, text) => {
+    const c = await api.put(`/checklist/${id}`,{text});
+    setChecklist(prev=>prev.map(x=>x.id===id?c:x));
+  };
+
+  // ── Comments ──────────────────────────────────────────────────────────────────
+  const addComment = async (subtask_id, text) => {
+    if (!text.trim()) return;
+    const c = await api.post("/comments",{subtask_id,text});
+    setComments(prev=>[...prev,c]);
+  };
+  const deleteComment = async (id) => {
+    await api.delete(`/comments/${id}`);
+    setComments(prev=>prev.filter(c=>c.id!==id));
+  };
+  const updateComment = async (id, text) => {
+    const c = await api.put(`/comments/${id}`,{text});
+    setComments(prev=>prev.map(x=>x.id===id?c:x));
+  };
+
+  // ── Capture ───────────────────────────────────────────────────────────────────
+  const doCapture = async () => {
+    if (!captureText.trim()) return;
+    const c = await api.post("/captures",{text:captureText});
+    setCaptures(prev=>[...prev,c]); setCaptureText("");
+  };
+  const promoteCapture = (cap) => {
+    setTaskForm({...emptyForm,project_id:projects[0]?.id||"",title:cap.text});
+    setPromotingCaptureId(cap.id);
+    setTaskModal("new");
+  };
+  const dismissCapture = async (id) => {
+    await api.put(`/captures/${id}`,{done:true});
+    setCaptures(prev=>prev.filter(c=>c.id!==id));
+  };
+
+  const panelTask = panel ? tasks.find(t=>t.id===panel.taskId) : null;
+
+  // ── Render ────────────────────────────────────────────────────────────────────
+  if (loading) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:12}}>
+      <div style={{width:32,height:32,borderRadius:8,background:"linear-gradient(135deg,#2563eb,#7c3aed)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:18}}>⚡</div>
+      <div style={{color:"var(--muted)",fontSize:13}}>Connecting to server…</div>
+    </div>
+  );
+
+  if (error) return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"center",height:"100vh",flexDirection:"column",gap:16,padding:32,textAlign:"center"}}>
+      <div style={{fontSize:32}}>🔌</div>
+      <div style={{fontWeight:700,color:"var(--text1)",fontSize:16}}>Cannot reach server</div>
+      <div style={{color:"var(--label)",fontSize:13,maxWidth:400}}>{error}</div>
+      <div style={{background:"var(--border2)",borderRadius:8,padding:"12px 20px",fontSize:12,color:"var(--text4)",fontFamily:"monospace",textAlign:"left"}}>
+        <div style={{color:"var(--muted)",marginBottom:6}}># In your project folder:</div>
+        <div>npm install</div>
+        <div>node server.js</div>
+      </div>
+      <button onClick={loadAll} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:7,padding:"8px 20px",cursor:"pointer",fontSize:13,fontWeight:600}}>Retry</button>
+    </div>
+  );
+
+  return (
+    <div style={{fontFamily:"'Inter',system-ui,sans-serif",background:"var(--bg)",height:"100vh",color:"var(--text2)",display:"flex",flexDirection:"column",overflow:"hidden"}}>
+
+      {/* Top bar */}
+      <div style={{height:52,background:"var(--panel)",borderBottom:"1px solid var(--border)",display:"flex",alignItems:"center",padding:"0 20px",gap:14,flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"center",gap:8}}>
+          <div style={{width:26,height:26,borderRadius:7,background:"linear-gradient(135deg,#2563eb,#7c3aed)",display:"flex",alignItems:"center",justifyContent:"center",fontSize:13}}>⚡</div>
+          <span style={{fontWeight:700,fontSize:14,color:"var(--text1)",letterSpacing:"-0.3px"}}>ActivityTracker</span>
+          <span style={{fontSize:10,color:"var(--faint)",background:"var(--well)",borderRadius:4,padding:"1px 6px"}}>local</span>
+        </div>
+        <div style={{width:1,height:20,background:"var(--border2)"}}/>
+        <div style={{display:"flex",gap:2}}>
+          {[["board","Board"],["focus","🎯 Focus"],["log","Log"]].map(([v,l])=>(
+            <button key={v} onClick={()=>setView(v)} style={{padding:"4px 11px",borderRadius:6,border:"none",cursor:"pointer",fontSize:12,fontWeight:500,background:view===v?"#1e3a5f":"transparent",color:view===v?"#93c5fd":"var(--label)"}}>{l}</button>
+          ))}
+        </div>
+        <div style={{marginLeft:"auto",display:"flex",gap:8,alignItems:"center"}}>
+          {stats.overdue>0  && <span style={{background:"#3b0a0a",color:"#fca5a5",border:"1px solid #7f1d1d",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>⏰ {stats.overdue} overdue</span>}
+          {stats.critical>0 && <span style={{background:"#3b0a0a",color:"#fca5a5",border:"1px solid #7f1d1d",borderRadius:20,padding:"2px 9px",fontSize:11,fontWeight:600}}>🔴 {stats.critical} critical</span>}
+          {stats.blocked>0  && <span style={{background:"#2a1010",color:"#fca5a5",border:"1px solid #991b1b",borderRadius:20,padding:"2px 9px",fontSize:11}}>🚧 {stats.blocked} blocked</span>}
+          <span style={{fontSize:11,color:"var(--muted)"}}>{stats.done}/{stats.total}</span>
+          <button onClick={()=>setTheme(t=>t==="dark"?"light":"dark")} title={theme==="dark"?"Switch to light mode":"Switch to dark mode"} style={{background:"var(--well)",border:"1px solid var(--border2)",color:"var(--label)",borderRadius:7,width:28,height:28,fontSize:13,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center"}}>{theme==="dark"?"☀️":"🌙"}</button>
+          <button onClick={()=>{setTaskForm({...emptyForm,project_id:projects[0]?.id||""});setTaskModal("new");}} style={{background:"#2563eb",color:"#fff",border:"none",borderRadius:7,padding:"5px 13px",fontSize:12,fontWeight:600,cursor:"pointer"}}>+ Task</button>
+        </div>
+      </div>
+
+      <div style={{display:"flex",flex:1,overflow:"hidden"}}>
+
+        {/* Sidebar */}
+        <div style={{width:210,background:"var(--panel)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+          {/* Capture */}
+          <div style={{padding:"14px 12px 12px",borderBottom:"1px solid var(--border)"}}>
+            <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:7}}>Quick Capture</div>
+            <div style={{display:"flex",gap:5}}>
+              <input value={captureText} onChange={e=>setCaptureText(e.target.value)} onKeyDown={e=>e.key==="Enter"&&doCapture()}
+                placeholder="Dump it here…" style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"5px 8px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+              <button onClick={doCapture} style={{background:"var(--border2)",border:"1px solid var(--faint)",borderRadius:5,padding:"0 8px",color:"var(--label)",cursor:"pointer",fontSize:14,fontWeight:700}}>+</button>
+            </div>
+            {capturedPending.map(c=>(
+              <div key={c.id} style={{background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"5px 8px",fontSize:11,color:"var(--text4)",display:"flex",alignItems:"center",gap:5,marginTop:5}}>
+                <span style={{flex:1,lineHeight:1.4}}>{c.text}</span>
+                <button onClick={()=>promoteCapture(c)} style={{background:"none",border:"none",color:"#3b82f6",fontSize:13,cursor:"pointer",padding:0}}>→</button>
+                <button onClick={()=>dismissCapture(c.id)} style={{background:"none",border:"none",color:"var(--faint)",fontSize:13,cursor:"pointer",padding:0}}>×</button>
+              </div>
+            ))}
+          </div>
+
+          {/* Filters */}
+          <div style={{padding:"12px 12px 0",overflowY:"auto",flex:1}}>
+            <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Projects</div>
+            {[{id:"all",name:"All Projects",color_idx:-1},...projects].map((p,i)=>{
+              const col = i===0?null:cc(p.color_idx);
+              const active = filterProj===p.id;
+              const count  = i===0?null:tasks.filter(t=>t.project_id===p.id&&t.status!=="Done").length;
+              return (
+                <button key={p.id} onClick={()=>setFP(p.id)} style={{width:"100%",textAlign:"left",background:active?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:active?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                  {col&&<span style={{width:7,height:7,borderRadius:"50%",background:col.dot,flexShrink:0}}/>}
+                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                  {count!==null&&<span style={{fontSize:10,color:"var(--faint)"}}>{count}</span>}
+                </button>
+              );
+            })}
+            <button onClick={()=>{setNewProjName("");setProjModal("new");}} style={{width:"100%",textAlign:"left",background:"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:"#2563eb",fontSize:11,cursor:"pointer",marginTop:2}}>+ Add project</button>
+
+            <div style={{marginTop:16}}>
+              <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Status</div>
+              {["all",...STATUSES].map(s=>(
+                <button key={s} onClick={()=>setFS(s)} style={{width:"100%",textAlign:"left",background:filterStatus===s?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:filterStatus===s?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",marginBottom:2}}>
+                  {s==="all"?"All":s}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        {/* Main */}
+        <div style={{flex:1,overflowY:"auto",padding:18}}>
+
+          {/* BOARD */}
+          {view==="board"&&(
+            <div>
+              <div style={{marginBottom:14}}>
+                <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tasks…" style={{background:"var(--well)",border:"1px solid var(--border2)",borderRadius:7,padding:"7px 13px",color:"var(--text2)",fontSize:12,outline:"none",width:240}}/>
+              </div>
+              {projects.map(p=>{
+                const col = cc(p.color_idx);
+                const pTasks = filteredTasks.filter(t=>t.project_id===p.id);
+                if (!pTasks.length && filterProj!==p.id) return null;
+                const pSubs = subtasks.filter(s=>pTasks.map(t=>t.id).includes(s.task_id));
+                const pComs = comments.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
+                const pCheck = checklist.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
+                return (
+                  <div key={p.id} style={{marginBottom:28}}>
+                    <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
+                      <span style={{width:9,height:9,borderRadius:"50%",background:col.dot}}/>
+                      <span style={{fontWeight:700,fontSize:12,color:"var(--text3)"}}>{p.name}</span>
+                      <span style={{fontSize:11,color:"var(--faint)"}}>{pTasks.filter(t=>t.status!=="Done").length} active · {pSubs.length} subtasks · ✓ {pCheck.filter(c=>c.checked).length}/{pCheck.length} · 💬 {pComs.length}</span>
+                      <span style={{flex:1}}/>
+                      <button onClick={()=>{setNewProjName(p.name);setProjModal(p);}} style={{background:"none",border:"none",color:"var(--muted)",cursor:"pointer",fontSize:12,padding:"0 3px",flexShrink:0}}>✎</button>
+                      <button onClick={()=>{
+                        const n = tasks.filter(t=>t.project_id===p.id).length;
+                        const warn = n>0?` It has ${n} task${n===1?"":"s"} that will no longer appear on the board.`:"";
+                        if(confirm(`Delete project "${p.name}"?${warn}`))deleteProject(p.id);
+                      }} style={{background:"none",border:"none",color:"var(--muted)",cursor:"pointer",fontSize:14,padding:"0 3px",flexShrink:0}}>×</button>
+                    </div>
+                    <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                      {pTasks.map(t=>{
+                        const tSubs=subtasks.filter(s=>s.task_id===t.id);
+                        const tComs=comments.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                        const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                        return <TaskRow key={t.id} task={t} col={col} subtasks={tSubs} commentCount={tComs.length}
+                          checklistTotal={tCheck.length} checklistDone={tCheck.filter(c=>c.checked).length}
+                          committed={t.committed} canCommit={!t.committed&&committedActive.length<3}
+                          onCommit={()=>toggleCommit(t.id)} onOpen={()=>setPanel({taskId:t.id})}
+                          onEdit={()=>{setTaskForm({title:t.title,project_id:t.project_id,priority:t.priority,status:t.status,committed:t.committed,notes:t.notes||"",due_date:t.due_date||""});setTaskModal(t);}}
+                          onDelete={()=>deleteTask(t.id)}/>;
+                      })}
+                    </div>
+                  </div>
+                );
+              })}
+              {filteredTasks.length===0&&<Empty icon="📋" text="No tasks match your filters"/>}
+            </div>
+          )}
+
+          {/* FOCUS */}
+          {view==="focus"&&(
+            <div style={{maxWidth:660}}>
+              <div style={{marginBottom:22}}>
+                <div style={{fontSize:20,fontWeight:700,color:"var(--text1)",marginBottom:3}}>Today's Focus</div>
+                <div style={{fontSize:12,color:"var(--muted)"}}>Your committed 3. Everything else waits.</div>
+              </div>
+              {committedActive.length===0&&<Empty icon="🎯" text="No focus tasks pinned. Pin up to 3 from the Board view."/>}
+              {committedActive.map((t,i)=>{
+                const col=projColor(t.project_id);
+                const proj=projects.find(p=>p.id===t.project_id);
+                const tSubs=subtasks.filter(s=>s.task_id===t.id);
+                const tComs=comments.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                const due=dueInfo(t.due_date,t.status);
+                return (
+                  <div key={t.id} style={{background:"var(--panel)",border:`1px solid ${col.dot}50`,borderLeft:`3px solid ${col.dot}`,borderRadius:10,padding:"16px 18px",marginBottom:12}}>
+                    <div style={{display:"flex",alignItems:"flex-start",gap:12}}>
+                      <div style={{width:28,height:28,borderRadius:"50%",background:`${col.dot}18`,border:`1.5px solid ${col.dot}40`,display:"flex",alignItems:"center",justifyContent:"center",fontWeight:700,color:col.dot,fontSize:13,flexShrink:0}}>{i+1}</div>
+                      <div style={{flex:1}}>
+                        <div style={{fontWeight:600,fontSize:14,color:"var(--text1)",marginBottom:5}}>{t.title}</div>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
+                          {proj&&<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{proj.name}</span>}
+                          <StatusSelect value={t.status} onChange={s=>updateTask(t.id,{status:s})}/>
+                          <span style={{fontSize:10,color:"var(--label)"}}>{t.priority}</span>
+                          {due&&<span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{due.label}</span>}
+                        </div>
+                        {tSubs.length>0&&(
+                          <div>
+                            <div style={{fontSize:10,color:"var(--label)",fontWeight:700,textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:5}}>
+                              Subtasks — {tSubs.filter(s=>s.status==="Done").length}/{tSubs.length} done
+                              {tCheck.length>0&&<span style={{marginLeft:10,fontWeight:400}}>· ✓ {tCheck.filter(c=>c.checked).length}/{tCheck.length} checklist</span>}
+                            </div>
+                            <div style={{background:"var(--border2)",borderRadius:3,height:3,marginBottom:8,overflow:"hidden"}}>
+                              <div style={{background:col.dot,height:"100%",width:`${tSubs.length?(tSubs.filter(s=>s.status==="Done").length/tSubs.length)*100:0}%`}}/>
+                            </div>
+                            {tSubs.map(s=>(
+                              <div key={s.id} style={{display:"flex",alignItems:"center",gap:7,marginBottom:3}}>
+                                <span style={{width:6,height:6,borderRadius:"50%",background:ST[s.status].color,flexShrink:0}}/>
+                                <span style={{fontSize:12,color:s.status==="Done"?"var(--faint)":"var(--text4)",textDecoration:s.status==="Done"?"line-through":"none",flex:1}}>{s.title}</span>
+                                <span style={{fontSize:10,color:"var(--faint)"}}>💬 {comments.filter(c=>c.subtask_id===s.id).length}</span>
+                                <StatusSelect value={s.status} onChange={v=>updateSubtask(s.id,{status:v})} small/>
+                              </div>
+                            ))}
+                          </div>
+                        )}
+                        {tComs.length>0&&<div style={{marginTop:6,fontSize:11,color:"var(--muted)"}}>💬 {tComs.length} comment{tComs.length>1?"s":""}</div>}
+                      </div>
+                      <div style={{display:"flex",gap:5,flexShrink:0}}>
+                        <button onClick={()=>setPanel({taskId:t.id})} style={{background:"var(--well)",border:"1px solid var(--border)",color:"var(--label)",borderRadius:5,padding:"4px 10px",fontSize:11,cursor:"pointer"}}>Open</button>
+                        <button onClick={()=>toggleCommit(t.id)} style={{background:"transparent",border:"1px solid var(--faint)",color:"var(--muted)",borderRadius:5,padding:"4px 8px",fontSize:11,cursor:"pointer"}}>Unpin</button>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+              {capturedPending.length>0&&(
+                <div style={{marginTop:28}}>
+                  <div style={{fontSize:12,fontWeight:600,color:"var(--muted)",marginBottom:10}}>📥 Captured interruptions</div>
+                  {capturedPending.map(c=>(
+                    <div key={c.id} style={{background:"var(--panel)",border:"1px solid var(--border)",borderRadius:7,padding:"9px 13px",marginBottom:5,display:"flex",gap:10,alignItems:"center"}}>
+                      <span style={{flex:1,fontSize:12,color:"var(--label)"}}>{c.text}</span>
+                      <button onClick={()=>promoteCapture(c)} style={{background:"#0f2a4a",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:5,padding:"3px 9px",fontSize:11,cursor:"pointer"}}>→ Task</button>
+                      <button onClick={()=>dismissCapture(c.id)} style={{background:"none",border:"none",color:"var(--faint)",fontSize:14,cursor:"pointer"}}>×</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
+
+          {/* LOG */}
+          {view==="log"&&(
+            <div style={{maxWidth:680}}>
+              <div style={{marginBottom:16}}>
+                <div style={{fontSize:18,fontWeight:700,color:"var(--text1)",marginBottom:2}}>Activity Log</div>
+                <div style={{fontSize:12,color:"var(--muted)"}}>All tasks, most recent first</div>
+              </div>
+              {[...tasks].sort((a,b)=>b.created-a.created).map(t=>{
+                const col=projColor(t.project_id);
+                const proj=projects.find(p=>p.id===t.project_id);
+                const tSubs=subtasks.filter(s=>s.task_id===t.id);
+                const tComs=comments.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                const due=dueInfo(t.due_date,t.status);
+                return (
+                  <div key={t.id} onClick={()=>setPanel({taskId:t.id})} style={{borderLeft:`3px solid ${t.status==="Done"?"#16a34a":col.dot}`,background:"var(--panel)",borderRadius:"0 8px 8px 0",padding:"11px 15px",marginBottom:6,display:"flex",gap:12,alignItems:"flex-start",cursor:"pointer"}}>
+                    <div style={{flex:1}}>
+                      <div style={{fontWeight:600,fontSize:13,color:t.status==="Done"?"var(--faint)":"var(--text1)",textDecoration:t.status==="Done"?"line-through":"none"}}>{t.title}</div>
+                      <div style={{display:"flex",gap:7,marginTop:4,flexWrap:"wrap"}}>
+                        {proj&&<span style={{fontSize:11,color:col.text}}>{proj.name}</span>}
+                        <span style={{fontSize:11,color:"var(--faint)"}}>·</span>
+                        <span style={{fontSize:11,color:ST[t.status].color}}>{t.status}</span>
+                        <span style={{fontSize:11,color:"var(--faint)"}}>·</span>
+                        <span style={{fontSize:11,color:"var(--muted)"}}>{t.priority}</span>
+                        {due&&<><span style={{fontSize:11,color:"var(--faint)"}}>·</span><span style={{fontSize:11,color:due.color}}>{due.label}</span></>}
+                        {tSubs.length>0&&<><span style={{fontSize:11,color:"var(--faint)"}}>·</span><span style={{fontSize:11,color:"var(--muted)"}}>{tSubs.filter(s=>s.status==="Done").length}/{tSubs.length} subtasks</span></>}
+                        {tCheck.length>0&&<><span style={{fontSize:11,color:"var(--faint)"}}>·</span><span style={{fontSize:11,color:"var(--muted)"}}>✓ {tCheck.filter(c=>c.checked).length}/{tCheck.length}</span></>}
+                        {tComs.length>0&&<><span style={{fontSize:11,color:"var(--faint)"}}>·</span><span style={{fontSize:11,color:"var(--muted)"}}>💬 {tComs.length}</span></>}
+                      </div>
+                    </div>
+                    {t.committed&&<span style={{background:"#0f2a4a",color:"#93c5fd",border:"1px solid #2563eb20",borderRadius:4,padding:"2px 7px",fontSize:10,flexShrink:0}}>📌 Focus</span>}
+                  </div>
+                );
+              })}
+            </div>
+          )}
+        </div>
+
+        {/* Detail Panel */}
+        {panel&&panelTask&&(
+          <DetailPanel
+            task={panelTask}
+            project={projects.find(p=>p.id===panelTask.project_id)}
+            col={projColor(panelTask.project_id)}
+            subtasks={subtasks.filter(s=>s.task_id===panelTask.id)}
+            checklist={checklist}
+            comments={comments}
+            onClose={()=>setPanel(null)}
+            onUpdateTask={patch=>updateTask(panelTask.id,patch)}
+            onAddSubtask={title=>addSubtask(panelTask.id,title)}
+            onUpdateSubtask={updateSubtask}
+            onDeleteSubtask={deleteSubtask}
+            onAddComment={addComment}
+            onDeleteComment={deleteComment}
+            onUpdateComment={updateComment}
+            onAddCheckItem={addCheckItem}
+            onToggleCheckItem={toggleCheckItem}
+            onDeleteCheckItem={deleteCheckItem}
+            onUpdateCheckItem={updateCheckItem}
+          />
+        )}
+      </div>
+
+      {/* Task Modal */}
+      {taskModal&&(
+        <div style={{position:"fixed",inset:0,background:"var(--scrim)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}} onClick={e=>{if(e.target===e.currentTarget){closeTaskModal();}}}>
+          <div style={{background:"var(--panel)",borderRadius:12,padding:26,width:460,border:"1px solid var(--border)",maxHeight:"90vh",overflowY:"auto"}}>
+            <div style={{fontWeight:700,fontSize:15,color:"var(--text1)",marginBottom:18}}>{taskModal==="new"?"New Task":"Edit Task"}</div>
+            <FLabel label="Title">
+              <input autoFocus value={taskForm.title} onChange={e=>setTaskForm(f=>({...f,title:e.target.value}))} onKeyDown={e=>e.key==="Enter"&&saveTask()}
+                style={INP} placeholder="What needs to be done?"/>
+            </FLabel>
+            <div style={{display:"grid",gridTemplateColumns:"1fr 1fr",gap:12,marginBottom:14}}>
+              <FLabel label="Project" noMb>
+                <select value={taskForm.project_id} onChange={e=>setTaskForm(f=>({...f,project_id:e.target.value}))} style={INP}>
+                  {projects.map(p=><option key={p.id} value={p.id}>{p.name}</option>)}
+                </select>
+              </FLabel>
+              <FLabel label="Priority" noMb>
+                <select value={taskForm.priority} onChange={e=>setTaskForm(f=>({...f,priority:e.target.value}))} style={INP}>
+                  {PRIORITIES.map(p=><option key={p}>{p}</option>)}
+                </select>
+              </FLabel>
+            </div>
+            <FLabel label="Due date">
+              <div style={{display:"flex",gap:8}}>
+                <input type="date" value={taskForm.due_date} onChange={e=>setTaskForm(f=>({...f,due_date:e.target.value}))} style={{...INP,flex:1}}/>
+                {taskForm.due_date&&<button onClick={()=>setTaskForm(f=>({...f,due_date:""}))} style={{background:"transparent",border:"1px solid var(--border2)",color:"var(--label)",borderRadius:7,padding:"0 12px",cursor:"pointer",fontSize:12}}>Clear</button>}
+              </div>
+            </FLabel>
+            <FLabel label="Status">
+              <div style={{display:"flex",gap:5}}>
+                {STATUSES.map(s=>(
+                  <button key={s} onClick={()=>setTaskForm(f=>({...f,status:s}))} style={{flex:1,padding:"6px 4px",borderRadius:5,border:`1px solid ${taskForm.status===s?ST[s].border:"var(--border2)"}`,background:taskForm.status===s?ST[s].bg:"transparent",color:taskForm.status===s?ST[s].color:"var(--faint)",fontSize:11,cursor:"pointer",fontWeight:taskForm.status===s?600:400}}>{s}</button>
+                ))}
+              </div>
+            </FLabel>
+            <FLabel label="Notes">
+              <textarea value={taskForm.notes} onChange={e=>setTaskForm(f=>({...f,notes:e.target.value}))} rows={2} style={{...INP,resize:"vertical"}} placeholder="Context for tomorrow…"/>
+            </FLabel>
+            <div style={{display:"flex",alignItems:"center",gap:8}}>
+              <input type="checkbox" id="focusCb" checked={taskForm.committed} onChange={e=>setTaskForm(f=>({...f,committed:e.target.checked}))} style={{accentColor:"#2563eb"}}/>
+              <label htmlFor="focusCb" style={{fontSize:12,color:"var(--label)",cursor:"pointer"}}>Pin to today's focus ({committedActive.length}/3 used)</label>
+            </div>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:20}}>
+              <button onClick={closeTaskModal} style={{background:"transparent",border:"1px solid var(--border2)",color:"var(--label)",borderRadius:7,padding:"7px 16px",cursor:"pointer",fontSize:13}}>Cancel</button>
+              <button onClick={saveTask} style={{background:"#2563eb",border:"none",color:"#fff",borderRadius:7,padding:"7px 16px",cursor:"pointer",fontSize:13,fontWeight:600}}>{taskModal==="new"?"Add Task":"Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Project Modal */}
+      {projModal&&(
+        <div style={{position:"fixed",inset:0,background:"var(--scrim)",display:"flex",alignItems:"center",justifyContent:"center",zIndex:100}} onClick={e=>{if(e.target===e.currentTarget)setProjModal(false);}}>
+          <div style={{background:"var(--panel)",borderRadius:12,padding:26,width:380,border:"1px solid var(--border)"}}>
+            <div style={{fontWeight:700,fontSize:15,color:"var(--text1)",marginBottom:16}}>{projModal==="new"?"Add Project":"Edit Project"}</div>
+            <input autoFocus value={newProjName} onChange={e=>setNewProjName(e.target.value)} onKeyDown={e=>e.key==="Enter"&&saveProject()}
+              placeholder="e.g. Project D – AVD Deployment" style={{...INP,width:"100%"}}/>
+            <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:18}}>
+              <button onClick={()=>setProjModal(false)} style={{background:"transparent",border:"1px solid var(--border2)",color:"var(--label)",borderRadius:7,padding:"7px 14px",cursor:"pointer",fontSize:13}}>Cancel</button>
+              <button onClick={saveProject} style={{background:"#2563eb",border:"none",color:"#fff",borderRadius:7,padding:"7px 14px",cursor:"pointer",fontSize:13,fontWeight:600}}>{projModal==="new"?"Add":"Save"}</button>
+            </div>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Detail Panel ──────────────────────────────────────────────────────────────
+function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpdateTask,onAddSubtask,onUpdateSubtask,onDeleteSubtask,onAddComment,onDeleteComment,onUpdateComment,onAddCheckItem,onToggleCheckItem,onDeleteCheckItem,onUpdateCheckItem}) {
+  const [newSubTitle,    setNewSubTitle]    = useState("");
+  const [activeSubId,    setActiveSubId]    = useState(subtasks[0]?.id||null);
+  const [commentText,    setCommentText]    = useState("");
+  const [editingSubId,   setEditingSubId]   = useState(null);
+  const [editSubTitle,   setEditSubTitle]   = useState("");
+  const [editingComId,   setEditingComId]   = useState(null);
+  const [editComText,    setEditComText]    = useState("");
+  const [newCheckText,   setNewCheckText]   = useState("");
+  const [editingCheckId, setEditingCheckId] = useState(null);
+  const [editCheckText,  setEditCheckText]  = useState("");
+  const commentEndRef = useRef(null);
+
+  useEffect(()=>{
+    if (subtasks.length && !subtasks.find(s=>s.id===activeSubId)) setActiveSubId(subtasks[0]?.id||null);
+  },[subtasks]);
+  useEffect(()=>{ commentEndRef.current?.scrollIntoView({behavior:"smooth"}); },[comments,activeSubId]);
+
+  const activeSub    = subtasks.find(s=>s.id===activeSubId);
+  const activeComs   = comments.filter(c=>c.subtask_id===activeSubId);
+  const activeChecks = checklist.filter(c=>c.subtask_id===activeSubId);
+  const doneCount    = subtasks.filter(s=>s.status==="Done").length;
+  const checkDone    = activeChecks.filter(c=>c.checked).length;
+  const due          = dueInfo(task.due_date,task.status);
+  const dueBadge      = due&&<span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{due.label}</span>;
+
+  const submitComment = () => { onAddComment(activeSubId,commentText); setCommentText(""); };
+
+  return (
+    <div style={{width:440,background:"var(--panel)",borderLeft:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
+
+      {/* Header */}
+      <div style={{padding:"14px 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+        <div style={{display:"flex",alignItems:"flex-start",gap:10}}>
+          <span style={{width:10,height:10,borderRadius:"50%",background:col.dot,marginTop:4,flexShrink:0}}/>
+          <div style={{flex:1,minWidth:0}}>
+            <div style={{fontWeight:700,fontSize:14,color:"var(--text1)",lineHeight:1.4,marginBottom:5}}>{task.title}</div>
+            <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
+              {project&&<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{project.name}</span>}
+              <StatusSelect value={task.status} onChange={s=>onUpdateTask({status:s})}/>
+              <span style={{fontSize:10,color:"var(--label)"}}>{task.priority}</span>
+              {dueBadge}
+              <input type="date" value={task.due_date||""} onChange={e=>onUpdateTask({due_date:e.target.value})} style={{background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"2px 6px",color:"var(--label)",fontSize:10,outline:"none"}}/>
+            </div>
+          </div>
+          <button onClick={onClose} style={{background:"none",border:"none",color:"var(--muted)",fontSize:20,cursor:"pointer",padding:"0 4px",flexShrink:0,lineHeight:1}}>×</button>
+        </div>
+        {task.notes&&<div style={{marginTop:9,fontSize:12,color:"var(--muted)",fontStyle:"italic",paddingLeft:20}}>{task.notes}</div>}
+        {subtasks.length>0&&(
+          <div style={{marginTop:12,paddingLeft:20}}>
+            <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
+              <span style={{fontSize:10,color:"var(--faint)"}}>Subtask progress</span>
+              <span style={{fontSize:10,color:"var(--faint)"}}>{doneCount}/{subtasks.length}</span>
+            </div>
+            <div style={{background:"var(--border2)",borderRadius:4,height:4,overflow:"hidden"}}>
+              <div style={{background:col.dot,height:"100%",width:`${subtasks.length?(doneCount/subtasks.length)*100:0}%`,transition:"width 0.3s"}}/>
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Subtasks */}
+      <div style={{padding:"12px 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+        <div style={{fontSize:10,fontWeight:700,color:"var(--label)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Subtasks</div>
+        <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:180,overflowY:"auto"}}>
+          {subtasks.length===0&&<div style={{fontSize:12,color:"var(--faint)",padding:"6px 0"}}>No subtasks yet</div>}
+          {subtasks.map(s=>(
+            <div key={s.id} onClick={()=>{if(editingSubId!==s.id)setActiveSubId(s.id);}}
+              style={{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:7,cursor:"pointer",background:activeSubId===s.id?"var(--well)":"transparent",border:activeSubId===s.id?`1px solid ${col.dot}30`:"1px solid transparent"}}>
+              {editingSubId===s.id?(
+                <input autoFocus value={editSubTitle} onChange={e=>setEditSubTitle(e.target.value)}
+                  onKeyDown={e=>{if(e.key==="Enter"){onUpdateSubtask(s.id,{title:editSubTitle});setEditingSubId(null);}if(e.key==="Escape")setEditingSubId(null);}}
+                  onClick={e=>e.stopPropagation()} style={{flex:1,background:"var(--border2)",border:"1px solid var(--faint)",borderRadius:4,padding:"3px 7px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+              ):(
+                <>
+                  <span style={{width:7,height:7,borderRadius:"50%",background:ST[s.status].color,flexShrink:0}}/>
+                  <span style={{flex:1,fontSize:12,color:s.status==="Done"?"var(--faint)":"var(--text3)",textDecoration:s.status==="Done"?"line-through":"none",lineHeight:1.4}}>{s.title}</span>
+                  {checklist.filter(c=>c.subtask_id===s.id).length>0&&<span style={{fontSize:10,color:"var(--faint)",flexShrink:0}}>✓{checklist.filter(c=>c.subtask_id===s.id&&c.checked).length}/{checklist.filter(c=>c.subtask_id===s.id).length}</span>}
+                  <span style={{fontSize:10,color:"var(--faint)",flexShrink:0}}>💬{comments.filter(c=>c.subtask_id===s.id).length}</span>
+                </>
+              )}
+              <StatusSelect value={s.status} onChange={v=>onUpdateSubtask(s.id,{status:v})} small onClick={e=>e.stopPropagation()}/>
+              {editingSubId!==s.id&&(
+                <>
+                  <button onClick={e=>{e.stopPropagation();setEditingSubId(s.id);setEditSubTitle(s.title);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:"0 1px",flexShrink:0}}>✎</button>
+                  <button onClick={e=>{e.stopPropagation();onDeleteSubtask(s.id);if(activeSubId===s.id)setActiveSubId(subtasks.find(x=>x.id!==s.id)?.id||null);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 1px",flexShrink:0}}>×</button>
+                </>
+              )}
+            </div>
+          ))}
+        </div>
+        <div style={{display:"flex",gap:6,marginTop:8}}>
+          <input value={newSubTitle} onChange={e=>setNewSubTitle(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){onAddSubtask(newSubTitle);setNewSubTitle("");}}}
+            placeholder="+ Add subtask…" style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"6px 9px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+          <button onClick={()=>{onAddSubtask(newSubTitle);setNewSubTitle("");}} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:5,padding:"0 10px",fontSize:12,cursor:"pointer"}}>Add</button>
+        </div>
+      </div>
+
+      {/* Checklist */}
+      {activeSubId&&(
+        <div style={{padding:"10px 16px",borderBottom:"1px solid var(--border)",flexShrink:0}}>
+          <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:7}}>
+            <span style={{fontSize:10,fontWeight:700,color:"var(--label)",textTransform:"uppercase",letterSpacing:"0.07em"}}>Checklist</span>
+            {activeChecks.length>0&&(
+              <>
+                <span style={{fontSize:10,color:"var(--muted)"}}>{checkDone}/{activeChecks.length}</span>
+                <div style={{flex:1,background:"var(--border2)",borderRadius:3,height:3,overflow:"hidden"}}>
+                  <div style={{background:checkDone===activeChecks.length?"#16a34a":col.dot,height:"100%",width:`${activeChecks.length?(checkDone/activeChecks.length)*100:0}%`,transition:"width 0.3s"}}/>
+                </div>
+              </>
+            )}
+          </div>
+          <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:150,overflowY:"auto"}}>
+            {activeChecks.length===0&&<div style={{fontSize:11,color:"var(--faint)",padding:"3px 0"}}>No checklist items yet</div>}
+            {activeChecks.map(item=>(
+              <div key={item.id} style={{display:"flex",alignItems:"center",gap:8,padding:"4px 6px",borderRadius:5}}>
+                <button onClick={()=>onToggleCheckItem(item.id)} style={{width:15,height:15,borderRadius:4,border:`1.5px solid ${item.checked?"#16a34a":"var(--faint)"}`,background:item.checked?"#16a34a":"transparent",flexShrink:0,cursor:"pointer",display:"flex",alignItems:"center",justifyContent:"center",padding:0}}>
+                  {item.checked&&<span style={{color:"#fff",fontSize:9,lineHeight:1}}>✓</span>}
+                </button>
+                {editingCheckId===item.id?(
+                  <input autoFocus value={editCheckText} onChange={e=>setEditCheckText(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"){onUpdateCheckItem(item.id,editCheckText);setEditingCheckId(null);}if(e.key==="Escape")setEditingCheckId(null);}}
+                    style={{flex:1,background:"var(--border2)",border:"1px solid var(--faint)",borderRadius:4,padding:"2px 7px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+                ):(
+                  <span style={{flex:1,fontSize:12,color:item.checked?"var(--faint)":"var(--text4)",textDecoration:item.checked?"line-through":"none",lineHeight:1.4}}>{item.text}</span>
+                )}
+                {editingCheckId!==item.id&&(
+                  <>
+                    <button onClick={()=>{setEditingCheckId(item.id);setEditCheckText(item.text);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:11,padding:"0 1px",flexShrink:0}}>✎</button>
+                    <button onClick={()=>onDeleteCheckItem(item.id)} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:13,padding:"0 1px",flexShrink:0}}>×</button>
+                  </>
+                )}
+              </div>
+            ))}
+          </div>
+          <div style={{display:"flex",gap:6,marginTop:6}}>
+            <input value={newCheckText} onChange={e=>setNewCheckText(e.target.value)} onKeyDown={e=>{if(e.key==="Enter"){onAddCheckItem(activeSubId,newCheckText);setNewCheckText("");}}}
+              placeholder="+ Add checklist item…" style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"5px 9px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+            <button onClick={()=>{onAddCheckItem(activeSubId,newCheckText);setNewCheckText("");}} style={{background:"#14291f",border:"1px solid #16a34a",color:"#86efac",borderRadius:5,padding:"0 10px",fontSize:12,cursor:"pointer"}}>Add</button>
+          </div>
+        </div>
+      )}
+
+      {/* Comments */}
+      <div style={{flex:1,display:"flex",flexDirection:"column",overflow:"hidden"}}>
+        <div style={{padding:"10px 16px 8px",borderBottom:"1px solid var(--border)",flexShrink:0,display:"flex",alignItems:"center",gap:8}}>
+          <span style={{fontSize:10,fontWeight:700,color:"var(--label)",textTransform:"uppercase",letterSpacing:"0.07em"}}>Comments</span>
+          {activeSub
+            ?<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 7px",fontSize:10,maxWidth:200,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{activeSub.title}</span>
+            :<span style={{fontSize:11,color:"var(--faint)"}}>Select a subtask above</span>
+          }
+        </div>
+        <div style={{flex:1,overflowY:"auto",padding:"10px 16px",display:"flex",flexDirection:"column",gap:7}}>
+          {activeSub&&activeComs.length===0&&<div style={{textAlign:"center",padding:"20px 0",color:"var(--faint)",fontSize:12}}>No comments yet</div>}
+          {!activeSub&&<div style={{textAlign:"center",padding:"20px 0",color:"var(--faint)",fontSize:12}}>Select a subtask to view comments</div>}
+          {activeComs.map(c=>(
+            <div key={c.id} style={{background:"var(--well)",border:"1px solid var(--border)",borderRadius:8,padding:"10px 12px"}}>
+              <div style={{display:"flex",justifyContent:"space-between",alignItems:"center",marginBottom:5}}>
+                <span style={{fontSize:11,fontWeight:600,color:col.text}}>{c.author}</span>
+                <div style={{display:"flex",gap:8,alignItems:"center"}}>
+                  <span style={{fontSize:10,color:"var(--faint)"}}>{fmtDate(c.created)}</span>
+                  <button onClick={()=>{setEditingComId(c.id);setEditComText(c.text);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:0}}>✎</button>
+                  <button onClick={()=>onDeleteComment(c.id)} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:0}}>×</button>
+                </div>
+              </div>
+              {editingComId===c.id?(
+                <div style={{display:"flex",gap:6}}>
+                  <input value={editComText} onChange={e=>setEditComText(e.target.value)}
+                    onKeyDown={e=>{if(e.key==="Enter"){onUpdateComment(c.id,editComText);setEditingComId(null);}if(e.key==="Escape")setEditingComId(null);}}
+                    style={{flex:1,background:"var(--border2)",border:"1px solid var(--faint)",borderRadius:4,padding:"4px 8px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
+                  <button onClick={()=>{onUpdateComment(c.id,editComText);setEditingComId(null);}} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:4,padding:"0 8px",fontSize:11,cursor:"pointer"}}>Save</button>
+                </div>
+              ):(
+                <div style={{fontSize:12,color:"var(--text4)",lineHeight:1.55}}>{c.text}</div>
+              )}
+            </div>
+          ))}
+          <div ref={commentEndRef}/>
+        </div>
+        {activeSub&&(
+          <div style={{padding:"10px 16px 14px",borderTop:"1px solid var(--border)",flexShrink:0}}>
+            <div style={{display:"flex",gap:6}}>
+              <textarea value={commentText} onChange={e=>setCommentText(e.target.value)}
+                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();submitComment();}}}
+                placeholder="Add a comment… (Enter to send)" rows={2}
+                style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:6,padding:"8px 10px",color:"var(--text2)",fontSize:12,outline:"none",resize:"none",fontFamily:"inherit"}}/>
+              <button onClick={submitComment} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:6,padding:"0 12px",fontSize:12,cursor:"pointer",alignSelf:"stretch"}}>Send</button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
+// ── TaskRow ───────────────────────────────────────────────────────────────────
+function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,committed,canCommit,onCommit,onOpen,onEdit,onDelete}) {
+  const doneCount=subtasks.filter(s=>s.status==="Done").length;
+  const due=dueInfo(task.due_date,task.status);
+  return (
+    <div style={{background:"var(--panel)",border:`1px solid ${committed?col.dot+"50":"var(--border)"}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,opacity:task.status==="Done"?0.55:1}}>
+      <button onClick={onCommit} style={{width:20,height:20,borderRadius:5,border:`1px solid ${committed?col.dot:"var(--border2)"}`,background:committed?`${col.dot}18`:"transparent",color:committed?col.dot:"var(--border2)",cursor:canCommit||committed?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,flexShrink:0,opacity:!committed&&!canCommit?0.35:1}}>
+        {committed?"📌":"⊕"}
+      </button>
+      <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={onOpen}>
+        <div style={{fontWeight:600,fontSize:13,color:task.status==="Done"?"var(--faint)":"var(--text2)",textDecoration:task.status==="Done"?"line-through":"none",marginBottom:4}}>{task.title}</div>
+        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+          <span style={{background:ST[task.status].bg,color:ST[task.status].color,border:`1px solid ${ST[task.status].border}`,borderRadius:4,padding:"2px 6px",fontSize:10}}>{task.status}</span>
+          <span style={{fontSize:10,color:"var(--muted)"}}>{task.priority}</span>
+          {due&&<span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 6px",fontSize:10}}>{due.label}</span>}
+          {subtasks.length>0&&(
+            <span style={{fontSize:10,color:"var(--muted)",display:"flex",alignItems:"center",gap:5}}>
+              {doneCount}/{subtasks.length} subtasks
+              <span style={{display:"inline-block",width:32,height:3,borderRadius:2,background:"var(--border2)",position:"relative",overflow:"hidden"}}>
+                <span style={{position:"absolute",left:0,top:0,bottom:0,background:col.dot,width:`${subtasks.length?(doneCount/subtasks.length)*100:0}%`,borderRadius:2}}/>
+              </span>
+            </span>
+          )}
+          {checklistTotal>0&&<span style={{fontSize:10,color:"var(--muted)"}}>✓ {checklistDone}/{checklistTotal}</span>}
+          {commentCount>0&&<span style={{fontSize:10,color:"var(--muted)"}}>💬 {commentCount}</span>}
+        </div>
+      </div>
+      <button onClick={onOpen} style={{background:"var(--well)",border:"1px solid var(--border)",color:"var(--label)",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",flexShrink:0}}>Open →</button>
+      <button onClick={onEdit} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 3px",flexShrink:0}}>✎</button>
+      <button onClick={onDelete} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:16,padding:"0 3px",flexShrink:0}}>×</button>
+    </div>
+  );
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+function StatusSelect({value,onChange,small,onClick}) {
+  return <select value={value} onChange={e=>onChange(e.target.value)} onClick={onClick}
+    style={{background:ST[value].bg,border:`1px solid ${ST[value].border}`,color:ST[value].color,borderRadius:5,padding:small?"2px 4px":"4px 7px",fontSize:10,cursor:"pointer",outline:"none"}}>
+    {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
+  </select>;
+}
+function Empty({icon,text}) {
+  return <div style={{textAlign:"center",padding:"48px 0",color:"var(--faint)"}}><div style={{fontSize:28,marginBottom:8}}>{icon}</div><div style={{fontSize:13}}>{text}</div></div>;
+}
+function FLabel({label,children,noMb}) {
+  return <div style={{marginBottom:noMb?0:14}}><label style={{fontSize:11,color:"var(--muted)",display:"block",marginBottom:5}}>{label}</label>{children}</div>;
+}
+const INP = {width:"100%",background:"var(--well)",border:"1px solid var(--border2)",borderRadius:7,padding:"8px 11px",color:"var(--text2)",fontSize:13,outline:"none",boxSizing:"border-box",fontFamily:"inherit"};
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App/>);
+</script>
+</body>
+</html>
