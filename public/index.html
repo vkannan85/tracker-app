@@ -479,7 +479,7 @@ function App() {
                           onDragStart={()=>setDragTaskId(t.id)}
                           onDragOverRow={()=>{if(dragOverTaskId!==t.id)setDragOverTaskId(t.id);}}
                           onDragLeaveRow={()=>{if(dragOverTaskId===t.id)setDragOverTaskId(null);}}
-                          onDrop={()=>{if(dragTaskId&&dragTaskId!==t.id)reorderTask(dragTaskId,t.id);setDragTaskId(null);setDragOverTaskId(null);}}
+                          onDrop={(draggedId)=>{const id=draggedId||dragTaskId;if(id&&id!==t.id)reorderTask(id,t.id);setDragTaskId(null);setDragOverTaskId(null);}}
                           onDragEnd={()=>{setDragTaskId(null);setDragOverTaskId(null);}}
                           onCommit={()=>toggleCommit(t.id)} onOpen={()=>setPanel({taskId:t.id})}
                           onEdit={()=>{setTaskForm({title:t.title,project_id:t.project_id,priority:t.priority,status:t.status,committed:t.committed,notes:t.notes||"",due_date:t.due_date||""});setTaskModal(t);}}
@@ -776,10 +776,10 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
           {subtasks.map((s)=>(
             <div key={s.id}
               draggable={editingSubId!==s.id}
-              onDragStart={e=>{e.dataTransfer.effectAllowed="move";setDragSubId(s.id);}}
+              onDragStart={e=>{e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",s.id);setDragSubId(s.id);}}
               onDragOver={e=>{e.preventDefault();if(dragOverSubId!==s.id)setDragOverSubId(s.id);}}
               onDragLeave={()=>{if(dragOverSubId===s.id)setDragOverSubId(null);}}
-              onDrop={e=>{e.preventDefault();if(dragSubId&&dragSubId!==s.id)onReorderSubtask(dragSubId,s.id);setDragSubId(null);setDragOverSubId(null);}}
+              onDrop={e=>{e.preventDefault();const draggedId=e.dataTransfer.getData("text/plain")||dragSubId;if(draggedId&&draggedId!==s.id)onReorderSubtask(draggedId,s.id);setDragSubId(null);setDragOverSubId(null);}}
               onDragEnd={()=>{setDragSubId(null);setDragOverSubId(null);}}
               onClick={()=>{if(editingSubId!==s.id)setActiveSubId(s.id);}}
               style={{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:7,cursor:"pointer",background:activeSubId===s.id?"var(--well)":"transparent",border:dragOverSubId===s.id?`1px dashed ${col.dot}`:activeSubId===s.id?`1px solid ${col.dot}30`:"1px solid transparent",opacity:dragSubId===s.id?0.4:1}}>
@@ -908,10 +908,10 @@ function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,co
   const due=dueInfo(task.due_date,task.status);
   return (
     <div draggable
-      onDragStart={e=>{e.dataTransfer.effectAllowed="move";onDragStart();}}
+      onDragStart={e=>{e.dataTransfer.effectAllowed="move";e.dataTransfer.setData("text/plain",task.id);onDragStart();}}
       onDragOver={e=>{e.preventDefault();onDragOverRow();}}
       onDragLeave={onDragLeaveRow}
-      onDrop={e=>{e.preventDefault();onDrop();}}
+      onDrop={e=>{e.preventDefault();onDrop(e.dataTransfer.getData("text/plain"));}}
       onDragEnd={onDragEnd}
       style={{background:"var(--panel)",border:isDragOver?`1px dashed ${col.dot}`:`1px solid ${committed?col.dot+"50":"var(--border)"}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,opacity:isDragging?0.4:task.status==="Done"?0.55:1}}>
       <span title="Drag to reorder" style={{cursor:"grab",color:"var(--faint)",fontSize:13,flexShrink:0,lineHeight:1}}>⠿</span>
