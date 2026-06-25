@@ -99,6 +99,10 @@ function App() {
   const [view,         setView]        = useState("board");
   const [filterProj,   setFP]          = useState("all");
   const [filterStatus, setFS]          = useState("all");
+  const [filterPriority, setFPr]       = useState("all");
+  const [projCollapsed, setProjCollapsed] = useState(false);
+  const [statusCollapsed, setStatusCollapsed] = useState(false);
+  const [priorityCollapsed, setPriorityCollapsed] = useState(false);
   const [search,       setSearch]      = useState("");
   const [taskModal,    setTaskModal]   = useState(null);
   const [projModal,    setProjModal]   = useState(false);
@@ -156,6 +160,7 @@ function App() {
   const filteredTasks = tasks.filter(t => {
     if (filterProj!=="all" && t.project_id!==filterProj) return false;
     if (filterStatus!=="all" && t.status!==filterStatus) return false;
+    if (filterPriority!=="all" && t.priority!==filterPriority) return false;
     if (search && !t.title.toLowerCase().includes(search.toLowerCase())) return false;
     return true;
   });
@@ -410,26 +415,37 @@ function App() {
 
           {/* Filters */}
           <div style={{padding:"12px 12px 0",overflowY:"auto",flex:1}}>
-            <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Projects</div>
-            {[{id:"all",name:"All Projects",color_idx:-1},...projects].map((p,i)=>{
-              const col = i===0?null:cc(p.color_idx, theme);
-              const active = filterProj===p.id;
-              const count  = i===0?null:tasks.filter(t=>t.project_id===p.id&&t.status!=="Done").length;
-              return (
-                <button key={p.id} onClick={()=>setFP(p.id)} style={{width:"100%",textAlign:"left",background:active?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:active?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
-                  {col&&<span style={{width:7,height:7,borderRadius:"50%",background:col.dot,flexShrink:0}}/>}
-                  <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
-                  {count!==null&&<span style={{fontSize:10,color:"var(--faint)"}}>{count}</span>}
-                </button>
-              );
-            })}
-            <button onClick={()=>{setNewProjName("");setProjModal("new");}} style={{width:"100%",textAlign:"left",background:"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:"#2563eb",fontSize:11,cursor:"pointer",marginTop:2}}>+ Add project</button>
+            <SectionHeader title="Projects" collapsed={projCollapsed} onToggle={()=>setProjCollapsed(c=>!c)}/>
+            {!projCollapsed&&(<>
+              {[{id:"all",name:"All Projects",color_idx:-1},...projects].map((p,i)=>{
+                const col = i===0?null:cc(p.color_idx, theme);
+                const active = filterProj===p.id;
+                const count  = i===0?null:tasks.filter(t=>t.project_id===p.id&&t.status!=="Done").length;
+                return (
+                  <button key={p.id} onClick={()=>setFP(p.id)} style={{width:"100%",textAlign:"left",background:active?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:active?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",display:"flex",alignItems:"center",gap:6,marginBottom:2}}>
+                    {col&&<span style={{width:7,height:7,borderRadius:"50%",background:col.dot,flexShrink:0}}/>}
+                    <span style={{flex:1,overflow:"hidden",textOverflow:"ellipsis",whiteSpace:"nowrap"}}>{p.name}</span>
+                    {count!==null&&<span style={{fontSize:10,color:"var(--faint)"}}>{count}</span>}
+                  </button>
+                );
+              })}
+              <button onClick={()=>{setNewProjName("");setProjModal("new");}} style={{width:"100%",textAlign:"left",background:"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:"#2563eb",fontSize:11,cursor:"pointer",marginTop:2}}>+ Add project</button>
+            </>)}
 
             <div style={{marginTop:16}}>
-              <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Status</div>
-              {["all",...STATUSES].map(s=>(
+              <SectionHeader title="Status" collapsed={statusCollapsed} onToggle={()=>setStatusCollapsed(c=>!c)}/>
+              {!statusCollapsed&&["all",...STATUSES].map(s=>(
                 <button key={s} onClick={()=>setFS(s)} style={{width:"100%",textAlign:"left",background:filterStatus===s?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:filterStatus===s?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",marginBottom:2}}>
                   {s==="all"?"All":s}
+                </button>
+              ))}
+            </div>
+
+            <div style={{marginTop:16}}>
+              <SectionHeader title="Priority" collapsed={priorityCollapsed} onToggle={()=>setPriorityCollapsed(c=>!c)}/>
+              {!priorityCollapsed&&["all",...PRIORITIES].map(pr=>(
+                <button key={pr} onClick={()=>setFPr(pr)} style={{width:"100%",textAlign:"left",background:filterPriority===pr?"var(--well)":"transparent",border:"none",borderRadius:5,padding:"5px 7px",color:filterPriority===pr?"var(--text2)":"var(--muted)",fontSize:12,cursor:"pointer",marginBottom:2}}>
+                  {pr==="all"?"All":pr}
                 </button>
               ))}
             </div>
@@ -955,6 +971,14 @@ function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,co
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+function SectionHeader({title,collapsed,onToggle}) {
+  return (
+    <div style={{display:"flex",alignItems:"center",justifyContent:"space-between",marginBottom:6}}>
+      <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase"}}>{title}</div>
+      <button onClick={onToggle} title={collapsed?"Expand":"Collapse"} style={{width:16,height:16,background:"none",border:"1px solid var(--border2)",borderRadius:3,color:"var(--muted)",cursor:"pointer",fontSize:10,lineHeight:1,display:"flex",alignItems:"center",justifyContent:"center",padding:0,flexShrink:0}}>{collapsed?"+":"−"}</button>
+    </div>
+  );
+}
 function StatusSelect({value,onChange,small,onClick}) {
   return <select value={value} onChange={e=>onChange(e.target.value)} onClick={onClick}
     style={{background:ST[value].bg,border:`1px solid ${ST[value].border}`,color:ST[value].color,borderRadius:5,padding:small?"2px 4px":"4px 7px",fontSize:10,cursor:"pointer",outline:"none"}}>
