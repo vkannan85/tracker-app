@@ -42,7 +42,7 @@ app.delete("/api/projects/:id", (req, res) => {
 
 // ── Tasks ─────────────────────────────────────────────────────────────────────
 app.get("/api/tasks", (_, res) => {
-  res.json(db.prepare("SELECT * FROM tasks ORDER BY created ASC").all().map(t => ({ ...t, committed: !!t.committed })));
+  res.json(db.prepare("SELECT * FROM tasks ORDER BY sort_order ASC, created ASC").all().map(t => ({ ...t, committed: !!t.committed })));
 });
 
 app.post("/api/tasks", (req, res) => {
@@ -50,20 +50,21 @@ app.post("/api/tasks", (req, res) => {
   if (!title?.trim()) return res.status(400).json({ error: "Title required" });
   if (!project_id)    return res.status(400).json({ error: "project_id required" });
   const id = genId();
-  db.prepare("INSERT INTO tasks (id, project_id, title, priority, status, committed, notes, due_date, created) VALUES (?,?,?,?,?,?,?,?,?)")
-    .run(id, project_id, title.trim(), priority, status, committed ? 1 : 0, notes, due_date, Date.now());
+  const { next } = db.prepare("SELECT COALESCE(MAX(sort_order),-1)+1 AS next FROM tasks WHERE project_id=?").get(project_id);
+  db.prepare("INSERT INTO tasks (id, project_id, title, priority, status, committed, notes, due_date, sort_order, created) VALUES (?,?,?,?,?,?,?,?,?,?)")
+    .run(id, project_id, title.trim(), priority, status, committed ? 1 : 0, notes, due_date, next, Date.now());
   res.json({ ...db.prepare("SELECT * FROM tasks WHERE id=?").get(id), committed: !!committed });
 });
 
 app.put("/api/tasks/:id", (req, res) => {
-  const { title, priority, status, committed, notes, project_id, due_date } = req.body;
+  const { title, priority, status, committed, notes, project_id, due_date, sort_order } = req.body;
   const t = db.prepare("SELECT * FROM tasks WHERE id=?").get(req.params.id);
   if (!t) return res.status(404).json({ error: "Not found" });
   db.prepare(`UPDATE tasks SET
     title=COALESCE(?,title), priority=COALESCE(?,priority), status=COALESCE(?,status),
     committed=COALESCE(?,committed), notes=COALESCE(?,notes), project_id=COALESCE(?,project_id),
-    due_date=COALESCE(?,due_date)
-    WHERE id=?`).run(title, priority, status, committed !== undefined ? (committed ? 1 : 0) : null, notes, project_id, due_date, req.params.id);
+    due_date=COALESCE(?,due_date), sort_order=COALESCE(?,sort_order)
+    WHERE id=?`).run(title, priority, status, committed !== undefined ? (committed ? 1 : 0) : null, notes, project_id, due_date, sort_order, req.params.id);
   const updated = db.prepare("SELECT * FROM tasks WHERE id=?").get(req.params.id);
   res.json({ ...updated, committed: !!updated.committed });
 });
@@ -75,7 +76,7 @@ app.delete("/api/tasks/:id", (req, res) => {
 
 // ── Subtasks ──────────────────────────────────────────────────────────────────
 app.get("/api/subtasks", (_, res) => {
-  res.json(db.prepare("SELECT * FROM subtasks ORDER BY created ASC").all());
+  res.json(db.prepare("SELECT * FROM subtasks ORDER BY sort_order ASC, created ASC").all());
 });
 
 app.post("/api/subtasks", (req, res) => {
@@ -83,15 +84,16 @@ app.post("/api/subtasks", (req, res) => {
   if (!title?.trim()) return res.status(400).json({ error: "Title required" });
   if (!task_id)       return res.status(400).json({ error: "task_id required" });
   const id = genId();
-  db.prepare("INSERT INTO subtasks (id, task_id, title, status, priority, created) VALUES (?,?,?,?,?,?)")
-    .run(id, task_id, title.trim(), status, priority, Date.now());
+  const { next } = db.prepare("SELECT COALESCE(MAX(sort_order),-1)+1 AS next FROM subtasks WHERE task_id=?").get(task_id);
+  db.prepare("INSERT INTO subtasks (id, task_id, title, status, priority, sort_order, created) VALUES (?,?,?,?,?,?,?)")
+    .run(id, task_id, title.trim(), status, priority, next, Date.now());
   res.json(db.prepare("SELECT * FROM subtasks WHERE id=?").get(id));
 });
 
 app.put("/api/subtasks/:id", (req, res) => {
-  const { title, status, priority } = req.body;
-  db.prepare("UPDATE subtasks SET title=COALESCE(?,title), status=COALESCE(?,status), priority=COALESCE(?,priority) WHERE id=?")
-    .run(title, status, priority, req.params.id);
+  const { title, status, priority, sort_order } = req.body;
+  db.prepare("UPDATE subtasks SET title=COALESCE(?,title), status=COALESCE(?,status), priority=COALESCE(?,priority), sort_order=COALESCE(?,sort_order) WHERE id=?")
+    .run(title, status, priority, sort_order, req.params.id);
   res.json(db.prepare("SELECT * FROM subtasks WHERE id=?").get(req.params.id));
 });
 

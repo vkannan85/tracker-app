@@ -34,6 +34,9 @@
   ::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 4px; }
   select option { background: var(--border2); color: var(--text2); }
   input::placeholder, textarea::placeholder { color: var(--faint); }
+  .rte-content ul, .rte-content ol { padding-left: 20px; margin: 4px 0; }
+  .rte-content b, .rte-content strong { font-weight: 700; }
+  .rte-content[contenteditable]:empty:before { content: attr(data-placeholder); color: var(--faint); pointer-events: none; }
 </style>
 </head>
 <body>
@@ -44,10 +47,10 @@ const { useState, useEffect, useRef, useCallback } = React;
 // ── Constants ─────────────────────────────────────────────────────────────────
 const API = "http://localhost:3001/api";
 const CLIENT_COLORS = [
-  { dot:"#3b82f6", text:"#93c5fd" }, { dot:"#10b981", text:"#6ee7b7" },
-  { dot:"#f97316", text:"#fdba74" }, { dot:"#8b5cf6", text:"#c4b5fd" },
-  { dot:"#ec4899", text:"#f9a8d4" }, { dot:"#06b6d4", text:"#67e8f9" },
-  { dot:"#eab308", text:"#fde047" }, { dot:"#ef4444", text:"#fca5a5" },
+  { dot:"#3b82f6", text:"#93c5fd", textLight:"#1d4ed8" }, { dot:"#10b981", text:"#6ee7b7", textLight:"#047857" },
+  { dot:"#f97316", text:"#fdba74", textLight:"#c2410c" }, { dot:"#8b5cf6", text:"#c4b5fd", textLight:"#6d28d9" },
+  { dot:"#ec4899", text:"#f9a8d4", textLight:"#be185d" }, { dot:"#06b6d4", text:"#67e8f9", textLight:"#0e7490" },
+  { dot:"#eab308", text:"#fde047", textLight:"#a16207" }, { dot:"#ef4444", text:"#fca5a5", textLight:"#b91c1c" },
 ];
 const STATUSES   = ["To Do","In Progress","Blocked","Done"];
 const PRIORITIES = ["🔴 Critical","🟡 High","🟢 Normal"];
@@ -68,7 +71,10 @@ const dueInfo = (due_date, status) => {
   if (days<=2) return { label:"Due soon",          bg:"#2a2505", border:"#854d0e", color:"#fde047" };
   return        { label:`Due ${fmtDueDate(due_date)}`, bg:"var(--well)", border:"var(--border2)", color:"var(--label)" };
 };
-const cc = (idx) => CLIENT_COLORS[idx % CLIENT_COLORS.length];
+const cc = (idx, theme) => {
+  const c = CLIENT_COLORS[idx % CLIENT_COLORS.length];
+  return { dot:c.dot, text: theme==="light" ? c.textLight : c.text };
+};
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 const api = {
@@ -102,6 +108,21 @@ function App() {
   const [theme, setTheme] = useState(()=>localStorage.getItem("theme")||"dark");
   useEffect(()=>{ document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
 
+  const [navWidth, setNavWidth] = useState(()=>Number(localStorage.getItem("navWidth"))||210);
+  const startNavResize = (e) => {
+    e.preventDefault();
+    const startX = e.clientX, startWidth = navWidth;
+    let w = startWidth;
+    const onMove = ev => { w = Math.min(420, Math.max(160, startWidth + (ev.clientX - startX))); setNavWidth(w); };
+    const onUp = () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("mouseup", onUp);
+      localStorage.setItem("navWidth", String(w));
+    };
+    window.addEventListener("mousemove", onMove);
+    window.addEventListener("mouseup", onUp);
+  };
+
   const emptyForm = { title:"", project_id: projects[0]?.id||"", priority:"🟢 Normal", status:"To Do", committed:false, notes:"", due_date:"" };
   const [taskForm, setTaskForm] = useState(emptyForm);
 
@@ -124,8 +145,8 @@ function App() {
   useEffect(() => { loadAll(); }, [loadAll]);
 
   // ── Derived ──────────────────────────────────────────────────────────────────
-  const projColor      = id => { const p=projects.find(x=>x.id===id); return cc(p?.color_idx??0); };
-  const committedActive = tasks.filter(t=>t.committed && t.status!=="Done");
+  const projColor      = id => { const p=projects.find(x=>x.id===id); return cc(p?.color_idx??0, theme); };
+  const committedActive = tasks.filter(t=>t.committed && t.status!=="Done").sort((a,b)=>a.sort_order-b.sort_order);
   const capturedPending = captures.filter(c=>!c.done);
 
   const filteredTasks = tasks.filter(t => {
@@ -199,10 +220,36 @@ function App() {
     setTasks(prev=>prev.map(x=>x.id===id?t:x));
   };
 
+  const duplicateTask = async (task) => {
+    const newTask = await api.post("/tasks", {
+      project_id: task.project_id, title: `${task.title} (copy)`, priority: task.priority,
+      status: task.status, notes: task.notes, due_date: task.due_date,
+    });
+    setTasks(prev=>[...prev,newTask]);
+    for (const s of subtasks.filter(s=>s.task_id===task.id)) {
+      const newSub = await api.post("/subtasks", { task_id:newTask.id, title:s.title, status:s.status, priority:s.priority });
+      setSubtasks(prev=>[...prev,newSub]);
+      for (const c of checklist.filter(c=>c.subtask_id===s.id)) {
+        const newCheck = await api.post("/checklist", { subtask_id:newSub.id, text:c.text });
+        setChecklist(prev=>[...prev,newCheck]);
+      }
+    }
+  };
+
   const toggleCommit = async (id) => {
     const t = tasks.find(x=>x.id===id); if(!t) return;
     if (!t.committed && committedActive.length>=3) return;
     await updateTask(id,{committed:!t.committed});
+  };
+
+  const moveTask = async (id, dir) => {
+    const t = tasks.find(x=>x.id===id); if(!t) return;
+    const siblings = tasks.filter(x=>x.project_id===t.project_id).sort((a,b)=>a.sort_order-b.sort_order);
+    const idx = siblings.findIndex(x=>x.id===id);
+    const swapIdx = idx + (dir==="up"?-1:1);
+    if (swapIdx<0 || swapIdx>=siblings.length) return;
+    const other = siblings[swapIdx];
+    await Promise.all([updateTask(t.id,{sort_order:other.sort_order}), updateTask(other.id,{sort_order:t.sort_order})]);
   };
 
   // ── Subtasks ──────────────────────────────────────────────────────────────────
@@ -220,6 +267,15 @@ function App() {
     setSubtasks(prev=>prev.filter(s=>s.id!==id));
     setChecklist(prev=>prev.filter(c=>c.subtask_id!==id));
     setComments(prev=>prev.filter(c=>c.subtask_id!==id));
+  };
+  const moveSubtask = async (id, dir) => {
+    const s = subtasks.find(x=>x.id===id); if(!s) return;
+    const siblings = subtasks.filter(x=>x.task_id===s.task_id).sort((a,b)=>a.sort_order-b.sort_order);
+    const idx = siblings.findIndex(x=>x.id===id);
+    const swapIdx = idx + (dir==="up"?-1:1);
+    if (swapIdx<0 || swapIdx>=siblings.length) return;
+    const other = siblings[swapIdx];
+    await Promise.all([updateSubtask(s.id,{sort_order:other.sort_order}), updateSubtask(other.id,{sort_order:s.sort_order})]);
   };
 
   // ── Checklist ─────────────────────────────────────────────────────────────────
@@ -326,7 +382,7 @@ function App() {
       <div style={{display:"flex",flex:1,overflow:"hidden"}}>
 
         {/* Sidebar */}
-        <div style={{width:210,background:"var(--panel)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
+        <div style={{width:navWidth,background:"var(--panel)",borderRight:"1px solid var(--border)",display:"flex",flexDirection:"column",overflow:"hidden",flexShrink:0}}>
           {/* Capture */}
           <div style={{padding:"14px 12px 12px",borderBottom:"1px solid var(--border)"}}>
             <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:7}}>Quick Capture</div>
@@ -348,7 +404,7 @@ function App() {
           <div style={{padding:"12px 12px 0",overflowY:"auto",flex:1}}>
             <div style={{fontSize:10,fontWeight:700,color:"var(--label)",letterSpacing:"0.08em",textTransform:"uppercase",marginBottom:6}}>Projects</div>
             {[{id:"all",name:"All Projects",color_idx:-1},...projects].map((p,i)=>{
-              const col = i===0?null:cc(p.color_idx);
+              const col = i===0?null:cc(p.color_idx, theme);
               const active = filterProj===p.id;
               const count  = i===0?null:tasks.filter(t=>t.project_id===p.id&&t.status!=="Done").length;
               return (
@@ -372,6 +428,9 @@ function App() {
           </div>
         </div>
 
+        {/* Sidebar resize handle */}
+        <div onMouseDown={startNavResize} style={{width:5,marginLeft:-3,marginRight:-2,cursor:"col-resize",flexShrink:0,zIndex:10}}/>
+
         {/* Main */}
         <div style={{flex:1,overflowY:"auto",padding:18}}>
 
@@ -382,12 +441,13 @@ function App() {
                 <input value={search} onChange={e=>setSearch(e.target.value)} placeholder="Search tasks…" style={{background:"var(--well)",border:"1px solid var(--border2)",borderRadius:7,padding:"7px 13px",color:"var(--text2)",fontSize:12,outline:"none",width:240}}/>
               </div>
               {projects.map(p=>{
-                const col = cc(p.color_idx);
-                const pTasks = filteredTasks.filter(t=>t.project_id===p.id);
+                const col = cc(p.color_idx, theme);
+                const pTasks = filteredTasks.filter(t=>t.project_id===p.id).sort((a,b)=>a.sort_order-b.sort_order);
                 if (!pTasks.length && filterProj!==p.id) return null;
                 const pSubs = subtasks.filter(s=>pTasks.map(t=>t.id).includes(s.task_id));
                 const pComs = comments.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
                 const pCheck = checklist.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
+                const allProjTasks = tasks.filter(x=>x.project_id===p.id).sort((a,b)=>a.sort_order-b.sort_order);
                 return (
                   <div key={p.id} style={{marginBottom:28}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
@@ -407,12 +467,20 @@ function App() {
                         const tSubs=subtasks.filter(s=>s.task_id===t.id);
                         const tComs=comments.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
                         const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
+                        const sIdx = allProjTasks.findIndex(x=>x.id===t.id);
                         return <TaskRow key={t.id} task={t} col={col} subtasks={tSubs} commentCount={tComs.length}
                           checklistTotal={tCheck.length} checklistDone={tCheck.filter(c=>c.checked).length}
                           committed={t.committed} canCommit={!t.committed&&committedActive.length<3}
+                          canMoveUp={sIdx>0} canMoveDown={sIdx<allProjTasks.length-1}
+                          onMoveUp={()=>moveTask(t.id,"up")} onMoveDown={()=>moveTask(t.id,"down")}
                           onCommit={()=>toggleCommit(t.id)} onOpen={()=>setPanel({taskId:t.id})}
                           onEdit={()=>{setTaskForm({title:t.title,project_id:t.project_id,priority:t.priority,status:t.status,committed:t.committed,notes:t.notes||"",due_date:t.due_date||""});setTaskModal(t);}}
-                          onDelete={()=>deleteTask(t.id)}/>;
+                          onDuplicate={()=>duplicateTask(t)}
+                          onDelete={()=>{
+                            const n = tSubs.length;
+                            const warn = n>0?` Its ${n} subtask${n===1?"":"s"} will also be deleted.`:"";
+                            if(confirm(`Delete task "${t.title}"?${warn}`))deleteTask(t.id);
+                          }}/>;
                       })}
                     </div>
                   </div>
@@ -446,7 +514,7 @@ function App() {
                         <div style={{display:"flex",gap:6,flexWrap:"wrap",marginBottom:8}}>
                           {proj&&<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{proj.name}</span>}
                           <StatusSelect value={t.status} onChange={s=>updateTask(t.id,{status:s})}/>
-                          <span style={{fontSize:10,color:"var(--label)"}}>{t.priority}</span>
+                          <PrioritySelect value={t.priority} onChange={p=>updateTask(t.id,{priority:p})}/>
                           {due&&<span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{due.label}</span>}
                         </div>
                         {tSubs.length>0&&(
@@ -537,7 +605,7 @@ function App() {
             task={panelTask}
             project={projects.find(p=>p.id===panelTask.project_id)}
             col={projColor(panelTask.project_id)}
-            subtasks={subtasks.filter(s=>s.task_id===panelTask.id)}
+            subtasks={subtasks.filter(s=>s.task_id===panelTask.id).sort((a,b)=>a.sort_order-b.sort_order)}
             checklist={checklist}
             comments={comments}
             onClose={()=>setPanel(null)}
@@ -545,6 +613,7 @@ function App() {
             onAddSubtask={title=>addSubtask(panelTask.id,title)}
             onUpdateSubtask={updateSubtask}
             onDeleteSubtask={deleteSubtask}
+            onMoveSubtask={moveSubtask}
             onAddComment={addComment}
             onDeleteComment={deleteComment}
             onUpdateComment={updateComment}
@@ -624,14 +693,14 @@ function App() {
 }
 
 // ── Detail Panel ──────────────────────────────────────────────────────────────
-function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpdateTask,onAddSubtask,onUpdateSubtask,onDeleteSubtask,onAddComment,onDeleteComment,onUpdateComment,onAddCheckItem,onToggleCheckItem,onDeleteCheckItem,onUpdateCheckItem}) {
+function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpdateTask,onAddSubtask,onUpdateSubtask,onDeleteSubtask,onMoveSubtask,onAddComment,onDeleteComment,onUpdateComment,onAddCheckItem,onToggleCheckItem,onDeleteCheckItem,onUpdateCheckItem}) {
   const [newSubTitle,    setNewSubTitle]    = useState("");
   const [activeSubId,    setActiveSubId]    = useState(subtasks[0]?.id||null);
-  const [commentText,    setCommentText]    = useState("");
+  const [notesDraft,     setNotesDraft]     = useState(task.notes||"");
+  const [notesFocused,   setNotesFocused]   = useState(false);
   const [editingSubId,   setEditingSubId]   = useState(null);
   const [editSubTitle,   setEditSubTitle]   = useState("");
   const [editingComId,   setEditingComId]   = useState(null);
-  const [editComText,    setEditComText]    = useState("");
   const [newCheckText,   setNewCheckText]   = useState("");
   const [editingCheckId, setEditingCheckId] = useState(null);
   const [editCheckText,  setEditCheckText]  = useState("");
@@ -641,6 +710,7 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
     if (subtasks.length && !subtasks.find(s=>s.id===activeSubId)) setActiveSubId(subtasks[0]?.id||null);
   },[subtasks]);
   useEffect(()=>{ commentEndRef.current?.scrollIntoView({behavior:"smooth"}); },[comments,activeSubId]);
+  useEffect(()=>{ setNotesDraft(task.notes||""); },[task.id]);
 
   const activeSub    = subtasks.find(s=>s.id===activeSubId);
   const activeComs   = comments.filter(c=>c.subtask_id===activeSubId);
@@ -650,7 +720,6 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
   const due          = dueInfo(task.due_date,task.status);
   const dueBadge      = due&&<span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{due.label}</span>;
 
-  const submitComment = () => { onAddComment(activeSubId,commentText); setCommentText(""); };
 
   return (
     <div style={{width:440,background:"var(--panel)",borderLeft:"1px solid var(--border)",display:"flex",flexDirection:"column",flexShrink:0,overflow:"hidden"}}>
@@ -664,14 +733,18 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
             <div style={{display:"flex",gap:5,flexWrap:"wrap"}}>
               {project&&<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 7px",fontSize:10}}>{project.name}</span>}
               <StatusSelect value={task.status} onChange={s=>onUpdateTask({status:s})}/>
-              <span style={{fontSize:10,color:"var(--label)"}}>{task.priority}</span>
+              <PrioritySelect value={task.priority} onChange={p=>onUpdateTask({priority:p})}/>
               {dueBadge}
               <input type="date" value={task.due_date||""} onChange={e=>onUpdateTask({due_date:e.target.value})} style={{background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,padding:"2px 6px",color:"var(--label)",fontSize:10,outline:"none"}}/>
             </div>
           </div>
           <button onClick={onClose} style={{background:"none",border:"none",color:"var(--muted)",fontSize:20,cursor:"pointer",padding:"0 4px",flexShrink:0,lineHeight:1}}>×</button>
         </div>
-        {task.notes&&<div style={{marginTop:9,fontSize:12,color:"var(--muted)",fontStyle:"italic",paddingLeft:20}}>{task.notes}</div>}
+        <textarea value={notesDraft} onChange={e=>setNotesDraft(e.target.value)}
+          onFocus={()=>setNotesFocused(true)}
+          onBlur={()=>{setNotesFocused(false);if(notesDraft!==(task.notes||""))onUpdateTask({notes:notesDraft});}}
+          placeholder="Add a short note about this task…" rows={2}
+          style={{marginTop:9,width:"100%",background:"transparent",border:`1px solid ${notesFocused?"var(--border2)":"transparent"}`,borderRadius:5,padding:"3px 4px 3px 20px",fontSize:12,color:"var(--muted)",fontStyle:"italic",fontFamily:"inherit",resize:"none",outline:"none"}}/>
         {subtasks.length>0&&(
           <div style={{marginTop:12,paddingLeft:20}}>
             <div style={{display:"flex",justifyContent:"space-between",marginBottom:4}}>
@@ -690,7 +763,7 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
         <div style={{fontSize:10,fontWeight:700,color:"var(--label)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Subtasks</div>
         <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:180,overflowY:"auto"}}>
           {subtasks.length===0&&<div style={{fontSize:12,color:"var(--faint)",padding:"6px 0"}}>No subtasks yet</div>}
-          {subtasks.map(s=>(
+          {subtasks.map((s,i)=>(
             <div key={s.id} onClick={()=>{if(editingSubId!==s.id)setActiveSubId(s.id);}}
               style={{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:7,cursor:"pointer",background:activeSubId===s.id?"var(--well)":"transparent",border:activeSubId===s.id?`1px solid ${col.dot}30`:"1px solid transparent"}}>
               {editingSubId===s.id?(
@@ -708,6 +781,10 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
               <StatusSelect value={s.status} onChange={v=>onUpdateSubtask(s.id,{status:v})} small onClick={e=>e.stopPropagation()}/>
               {editingSubId!==s.id&&(
                 <>
+                  <div style={{display:"flex",flexDirection:"column",flexShrink:0,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
+                    <button onClick={()=>onMoveSubtask(s.id,"up")} disabled={i===0} title="Move up" style={{background:"var(--well)",border:"none",borderBottom:"1px solid var(--border)",color:i===0?"var(--border2)":"var(--text2)",cursor:i===0?"default":"pointer",fontSize:11,padding:"1px 6px",lineHeight:1}}>▲</button>
+                    <button onClick={()=>onMoveSubtask(s.id,"down")} disabled={i===subtasks.length-1} title="Move down" style={{background:"var(--well)",border:"none",color:i===subtasks.length-1?"var(--border2)":"var(--text2)",cursor:i===subtasks.length-1?"default":"pointer",fontSize:11,padding:"1px 6px",lineHeight:1}}>▼</button>
+                  </div>
                   <button onClick={e=>{e.stopPropagation();setEditingSubId(s.id);setEditSubTitle(s.title);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:"0 1px",flexShrink:0}}>✎</button>
                   <button onClick={e=>{e.stopPropagation();onDeleteSubtask(s.id);if(activeSubId===s.id)setActiveSubId(subtasks.find(x=>x.id!==s.id)?.id||null);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 1px",flexShrink:0}}>×</button>
                 </>
@@ -785,19 +862,16 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
                 <span style={{fontSize:11,fontWeight:600,color:col.text}}>{c.author}</span>
                 <div style={{display:"flex",gap:8,alignItems:"center"}}>
                   <span style={{fontSize:10,color:"var(--faint)"}}>{fmtDate(c.created)}</span>
-                  <button onClick={()=>{setEditingComId(c.id);setEditComText(c.text);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:0}}>✎</button>
+                  <button onClick={()=>setEditingComId(c.id)} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:0}}>✎</button>
                   <button onClick={()=>onDeleteComment(c.id)} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:0}}>×</button>
                 </div>
               </div>
               {editingComId===c.id?(
-                <div style={{display:"flex",gap:6}}>
-                  <input value={editComText} onChange={e=>setEditComText(e.target.value)}
-                    onKeyDown={e=>{if(e.key==="Enter"){onUpdateComment(c.id,editComText);setEditingComId(null);}if(e.key==="Escape")setEditingComId(null);}}
-                    style={{flex:1,background:"var(--border2)",border:"1px solid var(--faint)",borderRadius:4,padding:"4px 8px",color:"var(--text2)",fontSize:12,outline:"none"}}/>
-                  <button onClick={()=>{onUpdateComment(c.id,editComText);setEditingComId(null);}} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:4,padding:"0 8px",fontSize:11,cursor:"pointer"}}>Save</button>
-                </div>
+                <RichTextEditor key={c.id} initialHTML={c.text} autoFocus submitLabel="Save"
+                  onSubmit={html=>{onUpdateComment(c.id,html);setEditingComId(null);}}
+                  onCancel={()=>setEditingComId(null)}/>
               ):(
-                <div style={{fontSize:12,color:"var(--text4)",lineHeight:1.55}}>{c.text}</div>
+                <div className="rte-content" style={{fontSize:12,color:"var(--text4)",lineHeight:1.55}} dangerouslySetInnerHTML={{__html:c.text}}/>
               )}
             </div>
           ))}
@@ -805,13 +879,8 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
         </div>
         {activeSub&&(
           <div style={{padding:"10px 16px 14px",borderTop:"1px solid var(--border)",flexShrink:0}}>
-            <div style={{display:"flex",gap:6}}>
-              <textarea value={commentText} onChange={e=>setCommentText(e.target.value)}
-                onKeyDown={e=>{if(e.key==="Enter"&&!e.shiftKey){e.preventDefault();submitComment();}}}
-                placeholder="Add a comment… (Enter to send)" rows={2}
-                style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:6,padding:"8px 10px",color:"var(--text2)",fontSize:12,outline:"none",resize:"none",fontFamily:"inherit"}}/>
-              <button onClick={submitComment} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:6,padding:"0 12px",fontSize:12,cursor:"pointer",alignSelf:"stretch"}}>Send</button>
-            </div>
+            <RichTextEditor key={activeSubId} placeholder="Add a comment…"
+              onSubmit={html=>onAddComment(activeSubId,html)} submitLabel="Send"/>
           </div>
         )}
       </div>
@@ -820,7 +889,7 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
 }
 
 // ── TaskRow ───────────────────────────────────────────────────────────────────
-function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,committed,canCommit,onCommit,onOpen,onEdit,onDelete}) {
+function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,committed,canCommit,canMoveUp,canMoveDown,onMoveUp,onMoveDown,onCommit,onOpen,onEdit,onDuplicate,onDelete}) {
   const doneCount=subtasks.filter(s=>s.status==="Done").length;
   const due=dueInfo(task.due_date,task.status);
   return (
@@ -847,7 +916,12 @@ function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,co
         </div>
       </div>
       <button onClick={onOpen} style={{background:"var(--well)",border:"1px solid var(--border)",color:"var(--label)",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",flexShrink:0}}>Open →</button>
+      <div style={{display:"flex",flexDirection:"column",flexShrink:0,border:"1px solid var(--border)",borderRadius:5,overflow:"hidden"}}>
+        <button onClick={onMoveUp} disabled={!canMoveUp} title="Move up" style={{background:"var(--well)",border:"none",borderBottom:"1px solid var(--border)",color:canMoveUp?"var(--text2)":"var(--border2)",cursor:canMoveUp?"pointer":"default",fontSize:12,padding:"2px 7px",lineHeight:1}}>▲</button>
+        <button onClick={onMoveDown} disabled={!canMoveDown} title="Move down" style={{background:"var(--well)",border:"none",color:canMoveDown?"var(--text2)":"var(--border2)",cursor:canMoveDown?"pointer":"default",fontSize:12,padding:"2px 7px",lineHeight:1}}>▼</button>
+      </div>
       <button onClick={onEdit} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 3px",flexShrink:0}}>✎</button>
+      <button onClick={onDuplicate} title="Duplicate task" style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:13,padding:"0 3px",flexShrink:0}}>⧉</button>
       <button onClick={onDelete} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:16,padding:"0 3px",flexShrink:0}}>×</button>
     </div>
   );
@@ -859,6 +933,65 @@ function StatusSelect({value,onChange,small,onClick}) {
     style={{background:ST[value].bg,border:`1px solid ${ST[value].border}`,color:ST[value].color,borderRadius:5,padding:small?"2px 4px":"4px 7px",fontSize:10,cursor:"pointer",outline:"none"}}>
     {STATUSES.map(s=><option key={s} value={s}>{s}</option>)}
   </select>;
+}
+function PrioritySelect({value,onChange,small,onClick}) {
+  return <select value={value} onChange={e=>onChange(e.target.value)} onClick={onClick}
+    style={{background:"var(--well)",border:"1px solid var(--border2)",color:"var(--text2)",borderRadius:5,padding:small?"2px 4px":"4px 7px",fontSize:10,cursor:"pointer",outline:"none"}}>
+    {PRIORITIES.map(p=><option key={p} value={p}>{p}</option>)}
+  </select>;
+}
+const RTE_BTN = {background:"var(--border2)",border:"1px solid var(--border)",color:"var(--text2)",borderRadius:4,minWidth:22,height:20,fontSize:11,cursor:"pointer",padding:"0 4px"};
+function RichTextEditor({initialHTML="",placeholder="",onSubmit,onCancel,submitLabel="Send",autoFocus}) {
+  const ref = useRef(null);
+  const savedRange = useRef(null);
+  useEffect(()=>{
+    if (ref.current) ref.current.innerHTML = initialHTML;
+    if (autoFocus) ref.current?.focus();
+  },[]);
+  const saveSelection = () => {
+    const sel = window.getSelection();
+    if (sel.rangeCount>0 && ref.current && ref.current.contains(sel.anchorNode)) {
+      savedRange.current = sel.getRangeAt(0).cloneRange();
+    }
+  };
+  const exec = (cmd) => {
+    ref.current?.focus();
+    if (savedRange.current) {
+      const sel = window.getSelection();
+      sel.removeAllRanges();
+      sel.addRange(savedRange.current);
+    }
+    document.execCommand(cmd);
+    saveSelection();
+  };
+  const doSubmit = () => {
+    const html = (ref.current?.innerHTML||"").trim();
+    if (!html || html==="<br>") return;
+    onSubmit(html);
+    if (ref.current) ref.current.innerHTML = "";
+  };
+  const handleKeyDown = (e) => {
+    if (e.key==="Enter" && (e.ctrlKey||e.metaKey)) { e.preventDefault(); doSubmit(); }
+    else if (e.key==="Escape" && onCancel) { onCancel(); }
+  };
+  return (
+    <div style={{display:"flex",flexDirection:"column",gap:5,flex:1}}>
+      <div style={{display:"flex",gap:3}}>
+        <button type="button" title="Bold" onMouseDown={e=>{e.preventDefault();exec("bold");}} style={RTE_BTN}><b>B</b></button>
+        <button type="button" title="Italic" onMouseDown={e=>{e.preventDefault();exec("italic");}} style={RTE_BTN}><i>I</i></button>
+        <button type="button" title="Underline" onMouseDown={e=>{e.preventDefault();exec("underline");}} style={RTE_BTN}><u>U</u></button>
+        <button type="button" title="Bullet list" onMouseDown={e=>{e.preventDefault();exec("insertUnorderedList");}} style={RTE_BTN}>•≡</button>
+        <button type="button" title="Numbered list" onMouseDown={e=>{e.preventDefault();exec("insertOrderedList");}} style={RTE_BTN}>1.≡</button>
+      </div>
+      <div style={{display:"flex",gap:6}}>
+        <div ref={ref} contentEditable suppressContentEditableWarning onKeyDown={handleKeyDown}
+          onMouseUp={saveSelection} onKeyUp={saveSelection}
+          data-placeholder={placeholder} className="rte-content"
+          style={{flex:1,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:6,padding:"8px 10px",color:"var(--text2)",fontSize:12,outline:"none",minHeight:36,maxHeight:140,overflowY:"auto"}}/>
+        <button onClick={doSubmit} style={{background:"#1e3a5f",border:"1px solid #2563eb",color:"#93c5fd",borderRadius:6,padding:"0 12px",fontSize:12,cursor:"pointer",alignSelf:"stretch"}}>{submitLabel}</button>
+      </div>
+    </div>
+  );
 }
 function Empty({icon,text}) {
   return <div style={{textAlign:"center",padding:"48px 0",color:"var(--faint)"}}><div style={{fontSize:28,marginBottom:8}}>{icon}</div><div style={{fontSize:13}}>{text}</div></div>;

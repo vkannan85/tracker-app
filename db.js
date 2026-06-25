@@ -26,6 +26,7 @@ db.exec(`
     committed  INTEGER NOT NULL DEFAULT 0,
     notes      TEXT NOT NULL DEFAULT '',
     due_date   TEXT NOT NULL DEFAULT '',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created    INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   );
 
@@ -35,6 +36,7 @@ db.exec(`
     title      TEXT NOT NULL,
     status     TEXT NOT NULL DEFAULT 'To Do',
     priority   TEXT NOT NULL DEFAULT '🟢 Normal',
+    sort_order INTEGER NOT NULL DEFAULT 0,
     created    INTEGER NOT NULL DEFAULT (unixepoch() * 1000)
   );
 
@@ -66,6 +68,21 @@ db.exec(`
 const taskCols = db.prepare("PRAGMA table_info(tasks)").all().map(c => c.name);
 if (!taskCols.includes("due_date")) {
   db.exec("ALTER TABLE tasks ADD COLUMN due_date TEXT NOT NULL DEFAULT ''");
+}
+if (!taskCols.includes("sort_order")) {
+  db.exec("ALTER TABLE tasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+  for (const p of db.prepare("SELECT id FROM projects").all()) {
+    db.prepare("SELECT id FROM tasks WHERE project_id=? ORDER BY created ASC").all(p.id)
+      .forEach((r, i) => db.prepare("UPDATE tasks SET sort_order=? WHERE id=?").run(i, r.id));
+  }
+}
+const subtaskCols = db.prepare("PRAGMA table_info(subtasks)").all().map(c => c.name);
+if (!subtaskCols.includes("sort_order")) {
+  db.exec("ALTER TABLE subtasks ADD COLUMN sort_order INTEGER NOT NULL DEFAULT 0");
+  for (const t of db.prepare("SELECT id FROM tasks").all()) {
+    db.prepare("SELECT id FROM subtasks WHERE task_id=? ORDER BY created ASC").all(t.id)
+      .forEach((r, i) => db.prepare("UPDATE subtasks SET sort_order=? WHERE id=?").run(i, r.id));
+  }
 }
 
 // ── Seed default data if empty ────────────────────────────────────────────────
