@@ -108,6 +108,8 @@ function App() {
   const [theme, setTheme] = useState(()=>localStorage.getItem("theme")||"dark");
   const [dragTaskId, setDragTaskId] = useState(null);
   const [dragOverTaskId, setDragOverTaskId] = useState(null);
+  const [focusLimit, setFocusLimit] = useState(()=>Number(localStorage.getItem("focusLimit"))||3);
+  useEffect(()=>{ localStorage.setItem("focusLimit", String(focusLimit)); }, [focusLimit]);
   useEffect(()=>{ document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
 
   const [navWidth, setNavWidth] = useState(()=>Number(localStorage.getItem("navWidth"))||210);
@@ -240,7 +242,7 @@ function App() {
 
   const toggleCommit = async (id) => {
     const t = tasks.find(x=>x.id===id); if(!t) return;
-    if (!t.committed && committedActive.length>=3) return;
+    if (!t.committed && committedActive.length>=focusLimit) return;
     await updateTask(id,{committed:!t.committed});
   };
 
@@ -474,7 +476,7 @@ function App() {
                         const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
                         return <TaskRow key={t.id} task={t} col={col} subtasks={tSubs} commentCount={tComs.length}
                           checklistTotal={tCheck.length} checklistDone={tCheck.filter(c=>c.checked).length}
-                          committed={t.committed} canCommit={!t.committed&&committedActive.length<3}
+                          committed={t.committed} canCommit={!t.committed&&committedActive.length<focusLimit}
                           isDragging={dragTaskId===t.id} isDragOver={dragOverTaskId===t.id}
                           onDragStart={()=>setDragTaskId(t.id)}
                           onDragOverRow={()=>{if(dragOverTaskId!==t.id)setDragOverTaskId(t.id);}}
@@ -501,11 +503,19 @@ function App() {
           {/* FOCUS */}
           {view==="focus"&&(
             <div style={{maxWidth:660}}>
-              <div style={{marginBottom:22}}>
-                <div style={{fontSize:20,fontWeight:700,color:"var(--text1)",marginBottom:3}}>Today's Focus</div>
-                <div style={{fontSize:12,color:"var(--muted)"}}>Your committed 3. Everything else waits.</div>
+              <div style={{marginBottom:22,display:"flex",alignItems:"flex-start",justifyContent:"space-between",gap:16}}>
+                <div>
+                  <div style={{fontSize:20,fontWeight:700,color:"var(--text1)",marginBottom:3}}>Today's Focus</div>
+                  <div style={{fontSize:12,color:"var(--muted)"}}>Your committed {focusLimit}. Everything else waits.</div>
+                </div>
+                <div style={{display:"flex",alignItems:"center",gap:6,flexShrink:0}}>
+                  <span style={{fontSize:11,color:"var(--faint)"}}>Limit</span>
+                  <button onClick={()=>setFocusLimit(n=>Math.max(1,n-1))} style={{width:22,height:22,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,color:"var(--text2)",cursor:"pointer",fontSize:13,lineHeight:1}}>−</button>
+                  <span style={{fontSize:13,fontWeight:600,color:"var(--text2)",minWidth:14,textAlign:"center"}}>{focusLimit}</span>
+                  <button onClick={()=>setFocusLimit(n=>Math.min(20,n+1))} style={{width:22,height:22,background:"var(--well)",border:"1px solid var(--border2)",borderRadius:5,color:"var(--text2)",cursor:"pointer",fontSize:13,lineHeight:1}}>+</button>
+                </div>
               </div>
-              {committedActive.length===0&&<Empty icon="🎯" text="No focus tasks pinned. Pin up to 3 from the Board view."/>}
+              {committedActive.length===0&&<Empty icon="🎯" text={`No focus tasks pinned. Pin up to ${focusLimit} from the Board view.`}/>}
               {committedActive.map((t,i)=>{
                 const col=projColor(t.project_id);
                 const proj=projects.find(p=>p.id===t.project_id);
@@ -672,7 +682,7 @@ function App() {
             </FLabel>
             <div style={{display:"flex",alignItems:"center",gap:8}}>
               <input type="checkbox" id="focusCb" checked={taskForm.committed} onChange={e=>setTaskForm(f=>({...f,committed:e.target.checked}))} style={{accentColor:"#2563eb"}}/>
-              <label htmlFor="focusCb" style={{fontSize:12,color:"var(--label)",cursor:"pointer"}}>Pin to today's focus ({committedActive.length}/3 used)</label>
+              <label htmlFor="focusCb" style={{fontSize:12,color:"var(--label)",cursor:"pointer"}}>Pin to today's focus ({committedActive.length}/{focusLimit} used)</label>
             </div>
             <div style={{display:"flex",justifyContent:"flex-end",gap:8,marginTop:20}}>
               <button onClick={closeTaskModal} style={{background:"transparent",border:"1px solid var(--border2)",color:"var(--label)",borderRadius:7,padding:"7px 16px",cursor:"pointer",fontSize:13}}>Cancel</button>
