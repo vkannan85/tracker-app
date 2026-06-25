@@ -268,14 +268,16 @@ function App() {
     setChecklist(prev=>prev.filter(c=>c.subtask_id!==id));
     setComments(prev=>prev.filter(c=>c.subtask_id!==id));
   };
-  const moveSubtask = async (id, dir) => {
-    const s = subtasks.find(x=>x.id===id); if(!s) return;
+  const reorderSubtask = async (draggedId, targetId) => {
+    const s = subtasks.find(x=>x.id===draggedId); if(!s) return;
     const siblings = subtasks.filter(x=>x.task_id===s.task_id).sort((a,b)=>a.sort_order-b.sort_order);
-    const idx = siblings.findIndex(x=>x.id===id);
-    const swapIdx = idx + (dir==="up"?-1:1);
-    if (swapIdx<0 || swapIdx>=siblings.length) return;
-    const other = siblings[swapIdx];
-    await Promise.all([updateSubtask(s.id,{sort_order:other.sort_order}), updateSubtask(other.id,{sort_order:s.sort_order})]);
+    const from = siblings.findIndex(x=>x.id===draggedId);
+    const to   = siblings.findIndex(x=>x.id===targetId);
+    if (from===-1 || to===-1 || from===to) return;
+    const reordered = [...siblings];
+    const [moved] = reordered.splice(from,1);
+    reordered.splice(to,0,moved);
+    await Promise.all(reordered.map((item,idx)=>item.sort_order!==idx?updateSubtask(item.id,{sort_order:idx}):null).filter(Boolean));
   };
 
   // ── Checklist ─────────────────────────────────────────────────────────────────
@@ -613,7 +615,7 @@ function App() {
             onAddSubtask={title=>addSubtask(panelTask.id,title)}
             onUpdateSubtask={updateSubtask}
             onDeleteSubtask={deleteSubtask}
-            onMoveSubtask={moveSubtask}
+            onReorderSubtask={reorderSubtask}
             onAddComment={addComment}
             onDeleteComment={deleteComment}
             onUpdateComment={updateComment}
@@ -693,8 +695,10 @@ function App() {
 }
 
 // ── Detail Panel ──────────────────────────────────────────────────────────────
-function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpdateTask,onAddSubtask,onUpdateSubtask,onDeleteSubtask,onMoveSubtask,onAddComment,onDeleteComment,onUpdateComment,onAddCheckItem,onToggleCheckItem,onDeleteCheckItem,onUpdateCheckItem}) {
+function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpdateTask,onAddSubtask,onUpdateSubtask,onDeleteSubtask,onReorderSubtask,onAddComment,onDeleteComment,onUpdateComment,onAddCheckItem,onToggleCheckItem,onDeleteCheckItem,onUpdateCheckItem}) {
   const [newSubTitle,    setNewSubTitle]    = useState("");
+  const [dragSubId,      setDragSubId]      = useState(null);
+  const [dragOverSubId,  setDragOverSubId]  = useState(null);
   const [activeSubId,    setActiveSubId]    = useState(subtasks[0]?.id||null);
   const [notesDraft,     setNotesDraft]     = useState(task.notes||"");
   const [notesFocused,   setNotesFocused]   = useState(false);
@@ -763,9 +767,17 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
         <div style={{fontSize:10,fontWeight:700,color:"var(--label)",textTransform:"uppercase",letterSpacing:"0.07em",marginBottom:8}}>Subtasks</div>
         <div style={{display:"flex",flexDirection:"column",gap:3,maxHeight:180,overflowY:"auto"}}>
           {subtasks.length===0&&<div style={{fontSize:12,color:"var(--faint)",padding:"6px 0"}}>No subtasks yet</div>}
-          {subtasks.map((s,i)=>(
-            <div key={s.id} onClick={()=>{if(editingSubId!==s.id)setActiveSubId(s.id);}}
-              style={{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:7,cursor:"pointer",background:activeSubId===s.id?"var(--well)":"transparent",border:activeSubId===s.id?`1px solid ${col.dot}30`:"1px solid transparent"}}>
+          {subtasks.map((s)=>(
+            <div key={s.id}
+              draggable={editingSubId!==s.id}
+              onDragStart={e=>{e.dataTransfer.effectAllowed="move";setDragSubId(s.id);}}
+              onDragOver={e=>{e.preventDefault();if(dragOverSubId!==s.id)setDragOverSubId(s.id);}}
+              onDragLeave={()=>{if(dragOverSubId===s.id)setDragOverSubId(null);}}
+              onDrop={e=>{e.preventDefault();if(dragSubId&&dragSubId!==s.id)onReorderSubtask(dragSubId,s.id);setDragSubId(null);setDragOverSubId(null);}}
+              onDragEnd={()=>{setDragSubId(null);setDragOverSubId(null);}}
+              onClick={()=>{if(editingSubId!==s.id)setActiveSubId(s.id);}}
+              style={{display:"flex",alignItems:"center",gap:7,padding:"7px 9px",borderRadius:7,cursor:"pointer",background:activeSubId===s.id?"var(--well)":"transparent",border:dragOverSubId===s.id?`1px dashed ${col.dot}`:activeSubId===s.id?`1px solid ${col.dot}30`:"1px solid transparent",opacity:dragSubId===s.id?0.4:1}}>
+              <span title="Drag to reorder" style={{cursor:"grab",color:"var(--faint)",fontSize:12,flexShrink:0,lineHeight:1}}>⠿</span>
               {editingSubId===s.id?(
                 <input autoFocus value={editSubTitle} onChange={e=>setEditSubTitle(e.target.value)}
                   onKeyDown={e=>{if(e.key==="Enter"){onUpdateSubtask(s.id,{title:editSubTitle});setEditingSubId(null);}if(e.key==="Escape")setEditingSubId(null);}}
@@ -781,10 +793,6 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
               <StatusSelect value={s.status} onChange={v=>onUpdateSubtask(s.id,{status:v})} small onClick={e=>e.stopPropagation()}/>
               {editingSubId!==s.id&&(
                 <>
-                  <div style={{display:"flex",flexDirection:"column",flexShrink:0,border:"1px solid var(--border)",borderRadius:4,overflow:"hidden"}} onClick={e=>e.stopPropagation()}>
-                    <button onClick={()=>onMoveSubtask(s.id,"up")} disabled={i===0} title="Move up" style={{background:"var(--well)",border:"none",borderBottom:"1px solid var(--border)",color:i===0?"var(--border2)":"var(--text2)",cursor:i===0?"default":"pointer",fontSize:11,padding:"1px 6px",lineHeight:1}}>▲</button>
-                    <button onClick={()=>onMoveSubtask(s.id,"down")} disabled={i===subtasks.length-1} title="Move down" style={{background:"var(--well)",border:"none",color:i===subtasks.length-1?"var(--border2)":"var(--text2)",cursor:i===subtasks.length-1?"default":"pointer",fontSize:11,padding:"1px 6px",lineHeight:1}}>▼</button>
-                  </div>
                   <button onClick={e=>{e.stopPropagation();setEditingSubId(s.id);setEditSubTitle(s.title);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:12,padding:"0 1px",flexShrink:0}}>✎</button>
                   <button onClick={e=>{e.stopPropagation();onDeleteSubtask(s.id);if(activeSubId===s.id)setActiveSubId(subtasks.find(x=>x.id!==s.id)?.id||null);}} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 1px",flexShrink:0}}>×</button>
                 </>
