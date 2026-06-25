@@ -156,6 +156,7 @@ function App() {
   const projColor      = id => { const p=projects.find(x=>x.id===id); return cc(p?.color_idx??0, theme); };
   const committedActive = tasks.filter(t=>t.committed && t.status!=="Done").sort((a,b)=>a.sort_order-b.sort_order);
   const capturedPending = captures.filter(c=>!c.done);
+  const dueSoonTasks = tasks.filter(t=>t.due_date && t.status!=="Done").sort((a,b)=>a.due_date.localeCompare(b.due_date));
 
   const filteredTasks = tasks.filter(t => {
     if (filterProj!=="all" && t.project_id!==filterProj) return false;
@@ -378,7 +379,7 @@ function App() {
         </div>
         <div style={{width:1,height:20,background:"var(--border2)"}}/>
         <div style={{display:"flex",gap:2}}>
-          {[["board","Board"],["focus","🎯 Focus"],["log","Log"]].map(([v,l])=>(
+          {[["board","Board"],["due","📅 Due Soon"],["focus","🎯 Focus"],["log","Log"]].map(([v,l])=>(
             <button key={v} onClick={()=>setView(v)} style={{padding:"4px 11px",borderRadius:6,border:"none",cursor:"pointer",fontSize:12,fontWeight:500,background:view===v?"#1e3a5f":"transparent",color:view===v?"#93c5fd":"var(--label)"}}>{l}</button>
           ))}
         </div>
@@ -513,6 +514,40 @@ function App() {
                 );
               })}
               {filteredTasks.length===0&&<Empty icon="📋" text="No tasks match your filters"/>}
+            </div>
+          )}
+
+          {/* DUE SOON */}
+          {view==="due"&&(
+            <div style={{maxWidth:720}}>
+              <div style={{marginBottom:18}}>
+                <div style={{fontSize:20,fontWeight:700,color:"var(--text1)",marginBottom:3}}>Due Soon</div>
+                <div style={{fontSize:12,color:"var(--muted)"}}>{dueSoonTasks.length} task{dueSoonTasks.length===1?"":"s"} with a due date, soonest first.</div>
+              </div>
+              {dueSoonTasks.length===0&&<Empty icon="📅" text="No open tasks have a due date set."/>}
+              <div style={{display:"flex",flexDirection:"column",gap:7}}>
+                {dueSoonTasks.map(t=>{
+                  const col  = projColor(t.project_id);
+                  const proj = projects.find(p=>p.id===t.project_id);
+                  const due  = dueInfo(t.due_date, t.status);
+                  const tComs = comments.filter(c=>subtasks.filter(s=>s.task_id===t.id).map(s=>s.id).includes(c.subtask_id));
+                  return (
+                    <div key={t.id} style={{background:"var(--panel)",border:`1px solid ${due.border}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10}}>
+                      <span style={{background:due.bg,color:due.color,border:`1px solid ${due.border}`,borderRadius:4,padding:"2px 7px",fontSize:10,flexShrink:0,minWidth:64,textAlign:"center"}}>{due.label}</span>
+                      <div style={{flex:1,minWidth:0,cursor:"pointer"}} onClick={()=>setPanel({taskId:t.id})}>
+                        <div style={{fontWeight:600,fontSize:13,color:"var(--text2)",marginBottom:4}}>{t.title}</div>
+                        <div style={{display:"flex",gap:6,flexWrap:"wrap",alignItems:"center"}}>
+                          {proj&&<span style={{background:`${col.dot}18`,color:col.text,border:`1px solid ${col.dot}20`,borderRadius:4,padding:"2px 6px",fontSize:10}}>{proj.name}</span>}
+                          <span style={{background:ST[t.status].bg,color:ST[t.status].color,border:`1px solid ${ST[t.status].border}`,borderRadius:4,padding:"2px 6px",fontSize:10}}>{t.status}</span>
+                          <span style={{fontSize:10,color:"var(--muted)"}}>{t.priority}</span>
+                          {tComs.length>0&&<span style={{fontSize:10,color:"var(--muted)"}}>💬 {tComs.length}</span>}
+                        </div>
+                      </div>
+                      <button onClick={()=>setPanel({taskId:t.id})} style={{background:"var(--well)",border:"1px solid var(--border)",color:"var(--label)",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",flexShrink:0}}>Open →</button>
+                    </div>
+                  );
+                })}
+              </div>
             </div>
           )}
 
