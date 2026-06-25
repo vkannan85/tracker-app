@@ -106,6 +106,8 @@ function App() {
   const [captureText,  setCaptureText] = useState("");
   const [promotingCaptureId, setPromotingCaptureId] = useState(null);
   const [theme, setTheme] = useState(()=>localStorage.getItem("theme")||"dark");
+  const [dragTaskId, setDragTaskId] = useState(null);
+  const [dragOverTaskId, setDragOverTaskId] = useState(null);
   useEffect(()=>{ document.documentElement.dataset.theme = theme; localStorage.setItem("theme", theme); }, [theme]);
 
   const [navWidth, setNavWidth] = useState(()=>Number(localStorage.getItem("navWidth"))||210);
@@ -242,14 +244,16 @@ function App() {
     await updateTask(id,{committed:!t.committed});
   };
 
-  const moveTask = async (id, dir) => {
-    const t = tasks.find(x=>x.id===id); if(!t) return;
+  const reorderTask = async (draggedId, targetId) => {
+    const t = tasks.find(x=>x.id===draggedId); if(!t) return;
     const siblings = tasks.filter(x=>x.project_id===t.project_id).sort((a,b)=>a.sort_order-b.sort_order);
-    const idx = siblings.findIndex(x=>x.id===id);
-    const swapIdx = idx + (dir==="up"?-1:1);
-    if (swapIdx<0 || swapIdx>=siblings.length) return;
-    const other = siblings[swapIdx];
-    await Promise.all([updateTask(t.id,{sort_order:other.sort_order}), updateTask(other.id,{sort_order:t.sort_order})]);
+    const from = siblings.findIndex(x=>x.id===draggedId);
+    const to   = siblings.findIndex(x=>x.id===targetId);
+    if (from===-1 || to===-1 || from===to) return;
+    const reordered = [...siblings];
+    const [moved] = reordered.splice(from,1);
+    reordered.splice(to,0,moved);
+    await Promise.all(reordered.map((item,idx)=>item.sort_order!==idx?updateTask(item.id,{sort_order:idx}):null).filter(Boolean));
   };
 
   // ── Subtasks ──────────────────────────────────────────────────────────────────
@@ -449,7 +453,6 @@ function App() {
                 const pSubs = subtasks.filter(s=>pTasks.map(t=>t.id).includes(s.task_id));
                 const pComs = comments.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
                 const pCheck = checklist.filter(c=>pSubs.map(s=>s.id).includes(c.subtask_id));
-                const allProjTasks = tasks.filter(x=>x.project_id===p.id).sort((a,b)=>a.sort_order-b.sort_order);
                 return (
                   <div key={p.id} style={{marginBottom:28}}>
                     <div style={{display:"flex",alignItems:"center",gap:8,marginBottom:10}}>
@@ -469,12 +472,15 @@ function App() {
                         const tSubs=subtasks.filter(s=>s.task_id===t.id);
                         const tComs=comments.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
                         const tCheck=checklist.filter(c=>tSubs.map(s=>s.id).includes(c.subtask_id));
-                        const sIdx = allProjTasks.findIndex(x=>x.id===t.id);
                         return <TaskRow key={t.id} task={t} col={col} subtasks={tSubs} commentCount={tComs.length}
                           checklistTotal={tCheck.length} checklistDone={tCheck.filter(c=>c.checked).length}
                           committed={t.committed} canCommit={!t.committed&&committedActive.length<3}
-                          canMoveUp={sIdx>0} canMoveDown={sIdx<allProjTasks.length-1}
-                          onMoveUp={()=>moveTask(t.id,"up")} onMoveDown={()=>moveTask(t.id,"down")}
+                          isDragging={dragTaskId===t.id} isDragOver={dragOverTaskId===t.id}
+                          onDragStart={()=>setDragTaskId(t.id)}
+                          onDragOverRow={()=>{if(dragOverTaskId!==t.id)setDragOverTaskId(t.id);}}
+                          onDragLeaveRow={()=>{if(dragOverTaskId===t.id)setDragOverTaskId(null);}}
+                          onDrop={()=>{if(dragTaskId&&dragTaskId!==t.id)reorderTask(dragTaskId,t.id);setDragTaskId(null);setDragOverTaskId(null);}}
+                          onDragEnd={()=>{setDragTaskId(null);setDragOverTaskId(null);}}
                           onCommit={()=>toggleCommit(t.id)} onOpen={()=>setPanel({taskId:t.id})}
                           onEdit={()=>{setTaskForm({title:t.title,project_id:t.project_id,priority:t.priority,status:t.status,committed:t.committed,notes:t.notes||"",due_date:t.due_date||""});setTaskModal(t);}}
                           onDuplicate={()=>duplicateTask(t)}
@@ -897,11 +903,18 @@ function DetailPanel({task,project,col,subtasks,checklist,comments,onClose,onUpd
 }
 
 // ── TaskRow ───────────────────────────────────────────────────────────────────
-function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,committed,canCommit,canMoveUp,canMoveDown,onMoveUp,onMoveDown,onCommit,onOpen,onEdit,onDuplicate,onDelete}) {
+function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,committed,canCommit,isDragging,isDragOver,onDragStart,onDragOverRow,onDragLeaveRow,onDrop,onDragEnd,onCommit,onOpen,onEdit,onDuplicate,onDelete}) {
   const doneCount=subtasks.filter(s=>s.status==="Done").length;
   const due=dueInfo(task.due_date,task.status);
   return (
-    <div style={{background:"var(--panel)",border:`1px solid ${committed?col.dot+"50":"var(--border)"}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,opacity:task.status==="Done"?0.55:1}}>
+    <div draggable
+      onDragStart={e=>{e.dataTransfer.effectAllowed="move";onDragStart();}}
+      onDragOver={e=>{e.preventDefault();onDragOverRow();}}
+      onDragLeave={onDragLeaveRow}
+      onDrop={e=>{e.preventDefault();onDrop();}}
+      onDragEnd={onDragEnd}
+      style={{background:"var(--panel)",border:isDragOver?`1px dashed ${col.dot}`:`1px solid ${committed?col.dot+"50":"var(--border)"}`,borderRadius:9,padding:"11px 14px",display:"flex",alignItems:"center",gap:10,opacity:isDragging?0.4:task.status==="Done"?0.55:1}}>
+      <span title="Drag to reorder" style={{cursor:"grab",color:"var(--faint)",fontSize:13,flexShrink:0,lineHeight:1}}>⠿</span>
       <button onClick={onCommit} style={{width:20,height:20,borderRadius:5,border:`1px solid ${committed?col.dot:"var(--border2)"}`,background:committed?`${col.dot}18`:"transparent",color:committed?col.dot:"var(--border2)",cursor:canCommit||committed?"pointer":"not-allowed",display:"flex",alignItems:"center",justifyContent:"center",fontSize:11,flexShrink:0,opacity:!committed&&!canCommit?0.35:1}}>
         {committed?"📌":"⊕"}
       </button>
@@ -924,10 +937,6 @@ function TaskRow({task,col,subtasks,commentCount,checklistTotal,checklistDone,co
         </div>
       </div>
       <button onClick={onOpen} style={{background:"var(--well)",border:"1px solid var(--border)",color:"var(--label)",borderRadius:6,padding:"4px 10px",fontSize:11,cursor:"pointer",flexShrink:0}}>Open →</button>
-      <div style={{display:"flex",flexDirection:"column",flexShrink:0,border:"1px solid var(--border)",borderRadius:5,overflow:"hidden"}}>
-        <button onClick={onMoveUp} disabled={!canMoveUp} title="Move up" style={{background:"var(--well)",border:"none",borderBottom:"1px solid var(--border)",color:canMoveUp?"var(--text2)":"var(--border2)",cursor:canMoveUp?"pointer":"default",fontSize:12,padding:"2px 7px",lineHeight:1}}>▲</button>
-        <button onClick={onMoveDown} disabled={!canMoveDown} title="Move down" style={{background:"var(--well)",border:"none",color:canMoveDown?"var(--text2)":"var(--border2)",cursor:canMoveDown?"pointer":"default",fontSize:12,padding:"2px 7px",lineHeight:1}}>▼</button>
-      </div>
       <button onClick={onEdit} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:14,padding:"0 3px",flexShrink:0}}>✎</button>
       <button onClick={onDuplicate} title="Duplicate task" style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:13,padding:"0 3px",flexShrink:0}}>⧉</button>
       <button onClick={onDelete} style={{background:"none",border:"none",color:"var(--faint)",cursor:"pointer",fontSize:16,padding:"0 3px",flexShrink:0}}>×</button>
